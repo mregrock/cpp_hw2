@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <string_view>
 #include <optional>
+#include <variant>
 
 using namespace std;
 
@@ -640,24 +641,42 @@ void run_simulation(size_t n, size_t m) {
     simulator.run();
 }
 
-// Общий случай для сокрытия типа
+// Общий слуай для сокрытия типа
 template<typename T = void>
 struct TypeWrapper {
-    using type = T;  // По умолчанию void для неподдерживаемых типов
+    using type = T;
     
-    // Конструктор по умолчанию
     TypeWrapper() = default;
     
-    // Конструктор копирования для любого типа
-    template<typename U>
-    TypeWrapper(const TypeWrapper<U>&) {
-        // Просто создаем новый wrapper с другим типом
-    }
+    // Конструктор копирования для того же типа
+    TypeWrapper(const TypeWrapper&) = default;
     
-    // Оператор присваивания для любого типа
+    // Конструктор копирования для другого типа
+    template<typename U>
+    TypeWrapper(const TypeWrapper<U>&) = delete;  // Запрещаем конвертацию между разными типами
+    
+    // Оператор присваивания для того же типа
+    TypeWrapper& operator=(const TypeWrapper&) = default;
+    
+    // Оператор присваивания для другого типа
+    template<typename U>
+    TypeWrapper& operator=(const TypeWrapper<U>&) = delete;  // Запрещаем присваивание разных типов
+};
+
+// Специализация для void
+template<>
+struct TypeWrapper<void> {
+    using type = void;
+    
+    TypeWrapper() = default;
+    
+    // Разрешаем конструирование из любого типа
+    template<typename U>
+    TypeWrapper(const TypeWrapper<U>&) { }
+    
+    // Разрешаем присваивание любого типа
     template<typename U>
     TypeWrapper& operator=(const TypeWrapper<U>&) {
-        // Просто меняем тип
         return *this;
     }
 };
@@ -673,105 +692,139 @@ pair<size_t, size_t> parse_fixed_params(const string& type) {
     return {N, K};
 }
 
-// Класс-прослойка для хранения типов
+template<typename T>
+struct TypeHolder {
+    using type = T;
+    
+    TypeHolder() {
+        cerr << "Creating TypeHolder<" << typeid(T).name() << ">" << endl;
+    }
+};
+
+template<>
+struct TypeHolder<void> {
+    using type = void;
+    
+    TypeHolder() {
+        cerr << "Creating TypeHolder<void>" << endl;
+    }
+    
+    template<typename U>
+    TypeHolder(const TypeHolder<U>&) {
+        cerr << "Converting TypeHolder<" << typeid(U).name() << "> to TypeHolder<void>" << endl;
+    }
+    
+    template<typename U>
+    TypeHolder& operator=(const TypeHolder<U>&) {
+        cerr << "Assigning TypeHolder<" << typeid(U).name() << "> to TypeHolder<void>" << endl;
+        return *this;
+    }
+};
+
 template<typename... Types>
 struct TypeParser {
+    using ResultType = std::variant<TypeHolder<void>, TypeHolder<Types>...>;
+    
     static auto parse_type(const string& type) {
-        TypeWrapper<void> result;
-        cout << "Trying to parse type: " << type << endl;
-        cout << "Available types: ";
-        (cout << ... << (get_type_name<Types>() + ", "));
-        cout << endl;
+        cerr << "\nTypeParser::parse_type called with type: " << type << endl;
         
-        bool found = (... || (type_matches<Types>(type) ? 
-            ((void)(result = TypeWrapper<Types>{}), true) : false));
-        cout << "Found match: " << found << endl;
+        ResultType result{TypeHolder<void>{}};  // Начинаем с TypeHolder<void>
+        
+        auto try_match = [&](auto dummy) {
+            using T = decltype(dummy);
+            cerr << "Trying to match type " << typeid(T).name() << endl;
+            if (TypeParser::type_matches<T>(type)) {
+                cerr << "Match found! Creating TypeHolder<" << typeid(T).name() << ">" << endl;
+                result = TypeHolder<T>{};
+                cerr << "After assignment, result type is " << typeid(T).name() << endl;
+                return true;
+            }
+            return false;
+        };
+        
+        bool found = (try_match(Types{}) || ...);
+        
+        cerr << "Final result: " << (found ? "found match" : "no match found") << endl;
         return result;
     }
 
 private:
     template<typename T>
-    static string get_type_name() {
-        if constexpr (std::is_same_v<T, float>) {
-            return "float";
-        } else if constexpr (std::is_same_v<T, double>) {
-            return "double";
-        } else if constexpr (is_fixed_v<T>) {
-            return "Fixed<" + std::to_string(T::bits) + "," + std::to_string(T::frac) + ">";
-        }
-        return "unknown";
-    }
-
-    template<typename T>
     static bool type_matches(const string& type) {
-        cout << "Checking type against: " << get_type_name<T>() << endl;
         if constexpr (std::is_same_v<T, float>) {
             return type == "FLOAT";
         } else if constexpr (std::is_same_v<T, double>) {
             return type == "DOUBLE";
         } else if constexpr (is_fixed_v<T>) {
-            if (!type.starts_with("FIXED(")) return false;
+            if (!type.starts_with("FIXED(")) {
+                return false;
+            }
             
             auto params = parse_fixed_params(type);
-            cout << "Parsed params: N=" << params.first << ", K=" << params.second << endl;
-            cout << "Template params: N=" << T::bits << ", K=" << T::frac << endl;
-            return params.first == T::bits && params.second == T::frac;
+            return (params.first == T::bits && params.second == T::frac);
         }
         return false;
     }
 };
 
-// Функция для получения типа из строки на этапе компиляции
 template<typename T>
-constexpr auto get_type_wrapper(const string& type) {
-    cout << "\nAttempting to get_type_wrapper for: " << type << endl;
-    
+auto get_type_wrapper(const string& type) {
     #define FIXED(N,K) Fixed<N,K>
     #define FLOAT float
     #define DOUBLE double
     
     using Parser = TypeParser<TYPES>;
     auto result = Parser::parse_type(type);
-    cout << "Result type: " << typeid(result).name() << endl;
-    cout << "Result::type is void? " << std::is_same_v<typename decltype(result)::type, void> << endl;
     
     #undef FIXED
     #undef FLOAT
     #undef DOUBLE
     
-    return result;
+    using ReturnType = std::variant<TypeWrapper<void>, TypeWrapper<float>, TypeWrapper<Fixed<31,17>>, 
+                                  TypeWrapper<Fixed<25,11>>, TypeWrapper<Fixed<32,16>>, TypeWrapper<double>>;
+    
+    if (std::holds_alternative<TypeHolder<void>>(result)) {
+        cerr << "No match found, returning void wrapper" << endl;
+        return ReturnType{TypeWrapper<void>{}};
+    }
+    
+    return std::visit([](auto&& x) -> ReturnType {
+        using ActualType = typename std::decay_t<decltype(x)>::type;
+        cerr << "Creating TypeWrapper<" << typeid(ActualType).name() << ">" << endl;
+        return TypeWrapper<ActualType>{};
+    }, result);
 }
 
 bool create_and_run_simulation(const string& p_type, const string& v_type, const string& v_flow_type, 
                              size_t n, size_t m) {
-    cout << "\nCreating simulation with types:" << endl;
-    cout << "p_type: " << p_type << endl;
-    cout << "v_type: " << v_type << endl;
-    cout << "v_flow_type: " << v_flow_type << endl;
+    cerr << "\nCreating simulation with types:" << endl;
+    cerr << "p_type: " << p_type << endl;
+    cerr << "v_type: " << v_type << endl;
+    cerr << "v_flow_type: " << v_flow_type << endl;
 
-    cout << "\nResolving p_type..." << endl;
-    using P = typename decltype(get_type_wrapper<void>(p_type))::type;
-    cout << "P is: " << typeid(P).name() << endl;
+    auto p_wrapper = get_type_wrapper<void>(p_type);
+    using P = typename std::variant_alternative_t<0, decltype(p_wrapper)>::type;
+    cerr << "P is: " << typeid(P).name() << endl;
     
-    cout << "\nResolving v_type..." << endl;
-    using V = typename decltype(get_type_wrapper<void>(v_type))::type;
-    cout << "V is: " << typeid(V).name() << endl;
+    auto v_wrapper = get_type_wrapper<void>(v_type);
+    using V = typename std::variant_alternative_t<0, decltype(v_wrapper)>::type;
+    cerr << "V is: " << typeid(V).name() << endl;
     
-    cout << "\nResolving v_flow_type..." << endl;
-    using VF = typename decltype(get_type_wrapper<void>(v_flow_type))::type;
-    cout << "VF is: " << typeid(VF).name() << endl;
+    auto vf_wrapper = get_type_wrapper<void>(v_flow_type);
+    using VF = typename std::variant_alternative_t<0, decltype(vf_wrapper)>::type;
+    cerr << "VF is: " << typeid(VF).name() << endl;
 
-    cout << "\nType resolution complete" << endl;
-    cout << "P is void? " << std::is_same_v<P, void> << endl;
-    cout << "V is void? " << std::is_same_v<V, void> << endl;
-    cout << "VF is void? " << std::is_same_v<VF, void> << endl;
+    cerr << "\nType resolution complete" << endl;
+    cerr << "P is void? " << std::is_same_v<P, void> << endl;
+    cerr << "V is void? " << std::is_same_v<V, void> << endl;
+    cerr << "VF is void? " << std::is_same_v<VF, void> << endl;
 
     if constexpr (!std::is_same_v<P, void> && !std::is_same_v<V, void> && !std::is_same_v<VF, void>) {
-        cout << "All types resolved successfully" << endl;
+        cerr << "All types resolved successfully" << endl;
         run_simulation<P, V, VF>(n, m);
         return true;
     }
-    cout << "Failed to resolve types" << endl;
+    cerr << "Failed to resolve types" << endl;
     return false;
 }
 
