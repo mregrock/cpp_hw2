@@ -52,12 +52,12 @@ constexpr char initial_field[DEFAULT_N][DEFAULT_M + 1] = {
     "####################################################################################",
 };
 
-#ifndef DTYPES
-#define DTYPES FLOAT,FIXED(32,16),DOUBLE
+#ifndef TYPES
+#define TYPES FLOAT,FIXED(31,17),FIXED(25, 11),FIXED(32, 16),DOUBLE
 #endif
 
-#ifndef DSIZES
-#define DSIZES S(36,84)
+#ifndef SIZES
+#define SIZES S(36,84)
 #endif
 
 struct Size {
@@ -85,6 +85,9 @@ template<size_t N, size_t K>
 struct Fixed {
     static_assert(N > K, "N must be greater than K");
     static_assert(N <= 64, "N must be less than or equal to 64");
+    
+    static constexpr size_t bits = N;
+    static constexpr size_t frac = K;
     
     using StorageType = typename std::conditional<N <= 32, int32_t, int64_t>::type;
     
@@ -637,9 +640,140 @@ void run_simulation(size_t n, size_t m) {
     simulator.run();
 }
 
-#define FLOAT_TYPE if (type == "FLOAT") { run_simulation<float>(size.n, size.m); found = true; }
-#define DOUBLE_TYPE if (type == "DOUBLE") { run_simulation<double>(size.n, size.m); found = true; }
-#define FIXED_TYPE(N, K) if (type == "FIXED(" #N "," #K ")") { run_simulation<Fixed<N,K>>(size.n, size.m); found = true; }
+// Общий случай для сокрытия типа
+template<typename T = void>
+struct TypeWrapper {
+    using type = T;  // По умолчанию void для неподдерживаемых типов
+    
+    // Конструктор по умолчанию
+    TypeWrapper() = default;
+    
+    // Конструктор копирования для любого типа
+    template<typename U>
+    TypeWrapper(const TypeWrapper<U>&) {
+        // Просто создаем новый wrapper с другим типом
+    }
+    
+    // Оператор присваивания для любого типа
+    template<typename U>
+    TypeWrapper& operator=(const TypeWrapper<U>&) {
+        // Просто меняем тип
+        return *this;
+    }
+};
+
+// Перемещаем функцию parse_fixed_params выше
+pair<size_t, size_t> parse_fixed_params(const string& type) {
+    size_t start = type.find('(') + 1;
+    size_t comma = type.find(',', start);
+    size_t end = type.find(')', comma);
+    
+    size_t N = stoul(type.substr(start, comma - start));
+    size_t K = stoul(type.substr(comma + 1, end - comma - 1));
+    return {N, K};
+}
+
+// Класс-прослойка для хранения типов
+template<typename... Types>
+struct TypeParser {
+    static auto parse_type(const string& type) {
+        TypeWrapper<void> result;
+        cout << "Trying to parse type: " << type << endl;
+        cout << "Available types: ";
+        (cout << ... << (get_type_name<Types>() + ", "));
+        cout << endl;
+        
+        bool found = (... || (type_matches<Types>(type) ? 
+            ((void)(result = TypeWrapper<Types>{}), true) : false));
+        cout << "Found match: " << found << endl;
+        return result;
+    }
+
+private:
+    template<typename T>
+    static string get_type_name() {
+        if constexpr (std::is_same_v<T, float>) {
+            return "float";
+        } else if constexpr (std::is_same_v<T, double>) {
+            return "double";
+        } else if constexpr (is_fixed_v<T>) {
+            return "Fixed<" + std::to_string(T::bits) + "," + std::to_string(T::frac) + ">";
+        }
+        return "unknown";
+    }
+
+    template<typename T>
+    static bool type_matches(const string& type) {
+        cout << "Checking type against: " << get_type_name<T>() << endl;
+        if constexpr (std::is_same_v<T, float>) {
+            return type == "FLOAT";
+        } else if constexpr (std::is_same_v<T, double>) {
+            return type == "DOUBLE";
+        } else if constexpr (is_fixed_v<T>) {
+            if (!type.starts_with("FIXED(")) return false;
+            
+            auto params = parse_fixed_params(type);
+            cout << "Parsed params: N=" << params.first << ", K=" << params.second << endl;
+            cout << "Template params: N=" << T::bits << ", K=" << T::frac << endl;
+            return params.first == T::bits && params.second == T::frac;
+        }
+        return false;
+    }
+};
+
+// Функция для получения типа из строки на этапе компиляции
+template<typename T>
+constexpr auto get_type_wrapper(const string& type) {
+    cout << "\nAttempting to get_type_wrapper for: " << type << endl;
+    
+    #define FIXED(N,K) Fixed<N,K>
+    #define FLOAT float
+    #define DOUBLE double
+    
+    using Parser = TypeParser<TYPES>;
+    auto result = Parser::parse_type(type);
+    cout << "Result type: " << typeid(result).name() << endl;
+    cout << "Result::type is void? " << std::is_same_v<typename decltype(result)::type, void> << endl;
+    
+    #undef FIXED
+    #undef FLOAT
+    #undef DOUBLE
+    
+    return result;
+}
+
+bool create_and_run_simulation(const string& p_type, const string& v_type, const string& v_flow_type, 
+                             size_t n, size_t m) {
+    cout << "\nCreating simulation with types:" << endl;
+    cout << "p_type: " << p_type << endl;
+    cout << "v_type: " << v_type << endl;
+    cout << "v_flow_type: " << v_flow_type << endl;
+
+    cout << "\nResolving p_type..." << endl;
+    using P = typename decltype(get_type_wrapper<void>(p_type))::type;
+    cout << "P is: " << typeid(P).name() << endl;
+    
+    cout << "\nResolving v_type..." << endl;
+    using V = typename decltype(get_type_wrapper<void>(v_type))::type;
+    cout << "V is: " << typeid(V).name() << endl;
+    
+    cout << "\nResolving v_flow_type..." << endl;
+    using VF = typename decltype(get_type_wrapper<void>(v_flow_type))::type;
+    cout << "VF is: " << typeid(VF).name() << endl;
+
+    cout << "\nType resolution complete" << endl;
+    cout << "P is void? " << std::is_same_v<P, void> << endl;
+    cout << "V is void? " << std::is_same_v<V, void> << endl;
+    cout << "VF is void? " << std::is_same_v<VF, void> << endl;
+
+    if constexpr (!std::is_same_v<P, void> && !std::is_same_v<V, void> && !std::is_same_v<VF, void>) {
+        cout << "All types resolved successfully" << endl;
+        run_simulation<P, V, VF>(n, m);
+        return true;
+    }
+    cout << "Failed to resolve types" << endl;
+    return false;
+}
 
 string get_arg(string_view arg_name, int argc, char** argv, string_view default_value) {
     for (int i = 1; i < argc - 1; ++i) {
@@ -685,16 +819,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    bool found = false;
     auto size = parse_size(size_str.c_str());
-
-    if (p_type == "FLOAT" && v_type == "FIXED(32,5)" && v_flow_type == "DOUBLE") {
-        run_simulation<float, Fixed<32,5>, double>(size.n, size.m);
-        found = true;
-    }
-
-    if (!found) {
-        cerr << "Unsupported type combination" << endl;
+    
+    if (!create_and_run_simulation(p_type, v_type, v_flow_type, size.n, size.m)) {
+        cerr << "Failed to create simulation with types: " << p_type << ", " << v_type << ", " << v_flow_type << endl;
         return 1;
     }
     
