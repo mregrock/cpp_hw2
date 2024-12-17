@@ -141,7 +141,58 @@ int dirs[N][M]{};
 
 class FluidSimulator {
 private:
+    Fixed (&rho_ref)[256];
+    Fixed (&p_ref)[N][M];
+    Fixed (&old_p_ref)[N][M];
+    VectorField& velocity_ref;
+    VectorField& velocity_flow_ref;
+    int (&last_use_ref)[N][M];
+    int& UT_ref;
+    mt19937& rnd_ref;
+    int (&dirs_ref)[N][M];
+    char (&field_ref)[N][M + 1];
+
 public:
+    FluidSimulator(
+        Fixed (&rho_arr)[256],
+        Fixed (&p_arr)[N][M],
+        Fixed (&old_p_arr)[N][M],
+        VectorField& velocity,
+        VectorField& velocity_flow,
+        int (&last_use_arr)[N][M],
+        int& UT,
+        mt19937& rnd,
+        int (&dirs_arr)[N][M],
+        char (&field_arr)[N][M + 1]
+    ) : rho_ref(rho_arr),
+        p_ref(p_arr),
+        old_p_ref(old_p_arr),
+        velocity_ref(velocity),
+        velocity_flow_ref(velocity_flow),
+        last_use_ref(last_use_arr),
+        UT_ref(UT),
+        rnd_ref(rnd),
+        dirs_ref(dirs_arr),
+        field_ref(field_arr)
+    {
+        initialize();
+    }
+
+    void initialize() {
+        rho_ref[' '] = Fixed(0.01);
+        rho_ref['.'] = Fixed(1000);
+
+        for (size_t x = 0; x < N; ++x) {
+            for (size_t y = 0; y < M; ++y) {
+                if (field_ref[x][y] == '#')
+                    continue;
+                for (auto [dx, dy] : deltas) {
+                    dirs_ref[x][y] += (field_ref[x + dx][y + dy] != '#');
+                }
+            }
+        }
+    }
+
     friend int main();
 };
 
@@ -289,19 +340,9 @@ tuple<Fixed, bool, pair<int, int>> propagate_flow(int x, int y, Fixed lim) {
 }
 
 int main() {
-    rho[' '] = 0.01;
-    rho['.'] = 1000;
+    FluidSimulator simulator(rho, p, old_p, velocity, velocity_flow, last_use, UT, rnd, dirs, field);
+    
     Fixed g = 0.1;
-
-    for (size_t x = 0; x < N; ++x) {
-        for (size_t y = 0; y < M; ++y) {
-            if (field[x][y] == '#')
-                continue;
-            for (auto [dx, dy] : deltas) {
-                dirs[x][y] += (field[x + dx][y + dy] != '#');
-            }
-        }
-    }
 
     for (size_t i = 0; i < T; ++i) {
         

@@ -6,7 +6,6 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
-#include <assert.h>
 
 using namespace std;
 
