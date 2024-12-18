@@ -641,45 +641,147 @@ void run_simulation(size_t n, size_t m) {
     simulator.run();
 }
 
-// Общий слуай для сокрытия типа
+// Добавьте эту функцию для получения красивого имени типа (перед определением TypeWrapper)
+template<typename T>
+std::string get_pretty_type_name() {
+    if constexpr (std::is_same_v<T, float>) {
+        return "float";
+    } else if constexpr (std::is_same_v<T, double>) {
+        return "double";
+    } else if constexpr (is_fixed_v<T>) {
+        return "Fixed<" + std::to_string(T::bits) + "," + std::to_string(T::frac) + ">";
+    } else {
+        return "unknown";
+    }
+}
+
 template<typename T = void>
 struct TypeWrapper {
     using type = T;
+    T value;
     
     TypeWrapper() = default;
+    TypeWrapper(const T& v) : value(v) {}
     
-    // Конструктор копирования для того же типа
-    TypeWrapper(const TypeWrapper&) = default;
+    // Составные операторы присваивания
+    TypeWrapper& operator+=(const TypeWrapper& other) { value += other.value; return *this; }
+    TypeWrapper& operator-=(const TypeWrapper& other) { value -= other.value; return *this; }
+    TypeWrapper& operator*=(const TypeWrapper& other) { value *= other.value; return *this; }
+    TypeWrapper& operator/=(const TypeWrapper& other) { value /= other.value; return *this; }
     
-    // Конструктор копирования для другого типа
+    // Составные операторы присваивания с друг��ми типами
     template<typename U>
-    TypeWrapper(const TypeWrapper<U>&) = delete;  // Запрещаем конвертацию между разными типами
-    
-    // Оператор присваивания для того же типа
-    TypeWrapper& operator=(const TypeWrapper&) = default;
-    
-    // Оператор присваивания для другого типа
+    TypeWrapper& operator+=(const U& other) { value += other; return *this; }
     template<typename U>
-    TypeWrapper& operator=(const TypeWrapper<U>&) = delete;  // Запрещаем присваивание разных типов
+    TypeWrapper& operator-=(const U& other) { value -= other; return *this; }
+    template<typename U>
+    TypeWrapper& operator*=(const U& other) { value *= other; return *this; }
+    template<typename U>
+    TypeWrapper& operator/=(const U& other) { value /= other; return *this; }
+    
+    // Операторы сравнения
+    bool operator<(const TypeWrapper& other) const { return value < other.value; }
+    bool operator>(const TypeWrapper& other) const { return value > other.value; }
+    bool operator==(const TypeWrapper& other) const { return value == other.value; }
+    bool operator<=(const TypeWrapper& other) const { return value <= other.value; }
+    bool operator>=(const TypeWrapper& other) const { return value >= other.value; }
+    
+    // Операторы сравнения с другими типами
+    template<typename U>
+    bool operator<(const U& other) const { return value < other; }
+    template<typename U>
+    bool operator>(const U& other) const { return value > other; }
+    template<typename U>
+    bool operator<=(const U& other) const { return value <= other; }
+    template<typename U>
+    bool operator>=(const U& other) const { return value >= other; }
+    template<typename U>
+    bool operator==(const U& other) const { return value == other; }
+    
+    // Арифметические операторы
+    TypeWrapper operator+(const TypeWrapper& other) const { return TypeWrapper(value + other.value); }
+    TypeWrapper operator-(const TypeWrapper& other) const { return TypeWrapper(value - other.value); }
+    TypeWrapper operator*(const TypeWrapper& other) const { return TypeWrapper(value * other.value); }
+    TypeWrapper operator/(const TypeWrapper& other) const { return TypeWrapper(value / other.value); }
+    
+    // Конвертация из числовых типов
+    template<typename U, typename = std::enable_if_t<std::is_arithmetic_v<U>>>
+    TypeWrapper(U v) : value(T(v)) {}
+
+    std::string get_type_string() const {
+        return get_pretty_type_name<T>();
+    }
 };
 
-// Специализация для void
 template<>
 struct TypeWrapper<void> {
     using type = void;
     
     TypeWrapper() = default;
     
-    // Разрешаем конструирование из любого типа
     template<typename U>
-    TypeWrapper(const TypeWrapper<U>&) { }
+    TypeWrapper(const U&) {}
     
-    // Разрешаем присваивание любого типа
     template<typename U>
-    TypeWrapper& operator=(const TypeWrapper<U>&) {
-        return *this;
+    TypeWrapper& operator=(const U&) { return *this; }
+    
+    // Составные операторы присваивания
+    TypeWrapper& operator+=(const TypeWrapper&) { return *this; }
+    TypeWrapper& operator-=(const TypeWrapper&) { return *this; }
+    TypeWrapper& operator*=(const TypeWrapper&) { return *this; }
+    TypeWrapper& operator/=(const TypeWrapper&) { return *this; }
+    
+    // Составные операторы присваивания с другими типами
+    template<typename U>
+    TypeWrapper& operator+=(const U&) { return *this; }
+    template<typename U>
+    TypeWrapper& operator-=(const U&) { return *this; }
+    template<typename U>
+    TypeWrapper& operator*=(const U&) { return *this; }
+    template<typename U>
+    TypeWrapper& operator/=(const U&) { return *this; }
+    
+    // Операторы сравнения
+    bool operator<(const TypeWrapper&) const { return false; }
+    bool operator>(const TypeWrapper&) const { return false; }
+    bool operator==(const TypeWrapper&) const { return true; }
+    bool operator<=(const TypeWrapper&) const { return true; }
+    bool operator>=(const TypeWrapper&) const { return true; }
+    
+    // Операторы сравнения с другими типами
+    template<typename U>
+    bool operator<(const U&) const { return false; }
+    template<typename U>
+    bool operator>(const U&) const { return false; }
+    template<typename U>
+    bool operator<=(const U&) const { return true; }
+    template<typename U>
+    bool operator>=(const U&) const { return true; }
+    template<typename U>
+    bool operator==(const U&) const { return true; }
+    
+    // Арифметические операции
+    TypeWrapper operator+(const TypeWrapper&) const { return TypeWrapper{}; }
+    TypeWrapper operator-(const TypeWrapper&) const { return TypeWrapper{}; }
+    TypeWrapper operator*(const TypeWrapper&) const { return TypeWrapper{}; }
+    TypeWrapper operator/(const TypeWrapper&) const { return TypeWrapper{}; }
+
+    std::string get_type_string() const {
+        return "void";
     }
 };
+
+// Операторы сравнения с другими типами (обратный порядок)
+template<typename T, typename U>
+bool operator<(const U& a, const TypeWrapper<T>& b) { return b > a; }
+template<typename T, typename U>
+bool operator>(const U& a, const TypeWrapper<T>& b) { return b < a; }
+template<typename T, typename U>
+bool operator<=(const U& a, const TypeWrapper<T>& b) { return b >= a; }
+template<typename T, typename U>
+bool operator>=(const U& a, const TypeWrapper<T>& b) { return b <= a; }
+template<typename T, typename U>
+bool operator==(const U& a, const TypeWrapper<T>& b) { return b == a; }
 
 // Перемещаем функцию parse_fixed_params выше
 pair<size_t, size_t> parse_fixed_params(const string& type) {
@@ -701,50 +803,40 @@ struct TypeHolder {
     }
 };
 
-template<>
-struct TypeHolder<void> {
-    using type = void;
-    
-    TypeHolder() {
-        cerr << "Creating TypeHolder<void>" << endl;
-    }
-    
-    template<typename U>
-    TypeHolder(const TypeHolder<U>&) {
-        cerr << "Converting TypeHolder<" << typeid(U).name() << "> to TypeHolder<void>" << endl;
-    }
-    
-    template<typename U>
-    TypeHolder& operator=(const TypeHolder<U>&) {
-        cerr << "Assigning TypeHolder<" << typeid(U).name() << "> to TypeHolder<void>" << endl;
-        return *this;
-    }
+template<std::size_t I, typename... Types>
+struct TypesPackGetAt;
+
+template<typename First, typename... Rest>
+struct TypesPackGetAt<0, First, Rest...> {
+    using type = First;
+};
+
+template<std::size_t I, typename First, typename... Rest>
+struct TypesPackGetAt<I, First, Rest...> {
+    using type = typename TypesPackGetAt<I-1, Rest...>::type;
 };
 
 template<typename... Types>
 struct TypeParser {
-    using ResultType = std::variant<TypeHolder<void>, TypeHolder<Types>...>;
+    using ResultType = std::variant<TypeHolder<Types>...>;
     
-    static auto parse_type(const string& type) {
+    static ResultType parse_type(const string& type) {
         cerr << "\nTypeParser::parse_type called with type: " << type << endl;
         
-        ResultType result{TypeHolder<void>{}};  // Начинаем с TypeHolder<void>
+        ResultType result{TypeHolder<typename TypesPackGetAt<0, Types...>::type>{}};
         
-        auto try_match = [&](auto dummy) {
+        auto try_match = [&](auto dummy) -> bool {
             using T = decltype(dummy);
-            cerr << "Trying to match type " << typeid(T).name() << endl;
-            if (TypeParser::type_matches<T>(type)) {
-                cerr << "Match found! Creating TypeHolder<" << typeid(T).name() << ">" << endl;
+            if (type_matches<T>(type)) {
+                std::cout << "Match found! Type: " << get_pretty_type_name<T>() << std::endl;
                 result = TypeHolder<T>{};
-                cerr << "After assignment, result type is " << typeid(T).name() << endl;
                 return true;
             }
+            std::cout << "Trying type: " << get_pretty_type_name<T>() << std::endl;
             return false;
         };
         
         bool found = (try_match(Types{}) || ...);
-        
-        cerr << "Final result: " << (found ? "found match" : "no match found") << endl;
         return result;
     }
 
@@ -776,23 +868,14 @@ auto get_type_wrapper(const string& type) {
     using Parser = TypeParser<TYPES>;
     auto result = Parser::parse_type(type);
     
-    #undef FIXED
-    #undef FLOAT
-    #undef DOUBLE
-    
-    using ReturnType = std::variant<TypeWrapper<void>, TypeWrapper<float>, TypeWrapper<Fixed<31,17>>, 
-                                  TypeWrapper<Fixed<25,11>>, TypeWrapper<Fixed<32,16>>, TypeWrapper<double>>;
-    
-    if (std::holds_alternative<TypeHolder<void>>(result)) {
-        cerr << "No match found, returning void wrapper" << endl;
-        return ReturnType{TypeWrapper<void>{}};
-    }
-    
-    return std::visit([](auto&& x) -> ReturnType {
+    return std::visit([](auto&& x) -> TypeWrapper<void> {
         using ActualType = typename std::decay_t<decltype(x)>::type;
         cerr << "Creating TypeWrapper<" << typeid(ActualType).name() << ">" << endl;
         return TypeWrapper<ActualType>{};
     }, result);
+    #undef FIXED
+    #undef FLOAT
+    #undef DOUBLE
 }
 
 bool create_and_run_simulation(const string& p_type, const string& v_type, const string& v_flow_type, 
@@ -803,16 +886,16 @@ bool create_and_run_simulation(const string& p_type, const string& v_type, const
     cerr << "v_flow_type: " << v_flow_type << endl;
 
     auto p_wrapper = get_type_wrapper<void>(p_type);
-    using P = typename std::variant_alternative_t<0, decltype(p_wrapper)>::type;
-    cerr << "P is: " << typeid(P).name() << endl;
+    using P = decltype(get_type_wrapper<void>(p_type));
+    cerr << "P is: " << p_wrapper.get_type_string() << std::endl;
     
     auto v_wrapper = get_type_wrapper<void>(v_type);
-    using V = typename std::variant_alternative_t<0, decltype(v_wrapper)>::type;
-    cerr << "V is: " << typeid(V).name() << endl;
+    using V = decltype(get_type_wrapper<void>(v_type));
+    cerr << "V is: " << v_wrapper.get_type_string() << std::endl;
     
     auto vf_wrapper = get_type_wrapper<void>(v_flow_type);
-    using VF = typename std::variant_alternative_t<0, decltype(vf_wrapper)>::type;
-    cerr << "VF is: " << typeid(VF).name() << endl;
+    using VF = decltype(get_type_wrapper<void>(v_flow_type));
+    cerr << "VF is: " << vf_wrapper.get_type_string() << std::endl;
 
     cerr << "\nType resolution complete" << endl;
     cerr << "P is void? " << std::is_same_v<P, void> << endl;
@@ -855,8 +938,8 @@ bool is_valid_type(const string& type) {
 
 int main(int argc, char** argv) {
     string p_type = get_arg("--p-type", argc, argv, "FIXED(32,16)");
-    string v_type = get_arg("--v-type", argc, argv, "FIXED(32,16)");
-    string v_flow_type = get_arg("--v-flow-type", argc, argv, "FIXED(32,16)");
+    string v_type = get_arg("--v-type", argc, argv, "DOUBLE");
+    string v_flow_type = get_arg("--v-flow-type", argc, argv, "FIXED(38,11)");
     string size_str = get_arg("--size", argc, argv, "S(36,84)");
     
     if (!is_valid_type(p_type)) {
