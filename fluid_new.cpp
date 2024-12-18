@@ -553,15 +553,15 @@ public:
                         int nx = x + dx, ny = y + dy;
                         if (field[nx][ny] != '#' && old_p[nx][ny] < old_p[x][y]) {
                             auto delta_p = old_p[x][y] - old_p[nx][ny];
-                            auto force = delta_p;
+                            auto force = to_pressure(delta_p);
                             auto& contr = velocity.get(nx, ny, -dx, -dy);
-                            if (contr * rho[(int)field[nx][ny]] >= force) {
-                                contr -= force / rho[(int)field[nx][ny]];
+                            if (to_pressure(contr) * rho[(int)field[nx][ny]] >= force) {
+                                contr -= to_velocity(force / rho[(int)field[nx][ny]]);
                                 continue;
                             }
-                            force -= contr * rho[(int)field[nx][ny]];
+                            force -= to_pressure(contr) * rho[(int)field[nx][ny]];
                             contr = 0;
-                            velocity.add(x, y, dx, dy, force / rho[(int)field[x][y]]);
+                            velocity.add(x, y, dx, dy, to_velocity(force / rho[(int)field[x][y]]));
                             p[x][y] -= force / dirs[x][y];
                             total_delta_p -= force / dirs[x][y];
                         }
@@ -595,14 +595,14 @@ public:
                         if (old_v > VelocityType(0)) {
                             assert(new_v <= old_v);
                             velocity.get(x, y, dx, dy) = new_v;
-                            auto force = (old_v - new_v) * rho[(int)field[x][y]];
+                            auto force = to_pressure(old_v - new_v) * rho[(int)field[x][y]];
                             if (field[x][y] == '.') force *= PressureType(0.8);
                             if (field[x + dx][y + dy] == '#') {
-                                p[x][y] += force / to_pressure(dirs[x][y]);
-                                total_delta_p += force / to_pressure(dirs[x][y]);
+                                p[x][y] += force / dirs[x][y];
+                                total_delta_p += force / dirs[x][y];
                             } else {
-                                p[x + dx][y + dy] += force / to_pressure(dirs[x + dx][y + dy]);
-                                total_delta_p += force / to_pressure(dirs[x + dx][y + dy]);
+                                p[x + dx][y + dy] += force / dirs[x + dx][y + dy];
+                                total_delta_p += force / dirs[x + dx][y + dy];
                             }
                         }
                     }
