@@ -631,11 +631,11 @@ public:
 };
 
 template<typename P, typename V, typename VF>
-void run_simulation(size_t n, size_t m) {
-    if (n != DEFAULT_N || m != DEFAULT_M) {
-        cerr << "Only default size " << DEFAULT_N << "x" << DEFAULT_M << " is supported\n";
-        return;
-    }
+void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M) {
+    static_assert(!std::is_same_v<P, void>, "PressureType cannot be void");
+    static_assert(!std::is_same_v<V, void>, "VelocityType cannot be void");
+    static_assert(!std::is_same_v<VF, void>, "VFlowType cannot be void");
+    
     SimulationState<P, V, VF, DEFAULT_N, DEFAULT_M> state;
     FluidSimulator<P, V, VF, DEFAULT_N, DEFAULT_M> simulator(state);
     simulator.run();
@@ -669,7 +669,7 @@ struct TypeWrapper {
     TypeWrapper& operator*=(const TypeWrapper& other) { value *= other.value; return *this; }
     TypeWrapper& operator/=(const TypeWrapper& other) { value /= other.value; return *this; }
     
-    // Составные операторы присваивания с друг��ми типами
+    // Составные операторы присваивания с другими типами
     template<typename U>
     TypeWrapper& operator+=(const U& other) { value += other; return *this; }
     template<typename U>
@@ -799,7 +799,7 @@ struct TypeHolder {
     using type = T;
     
     TypeHolder() {
-        cerr << "Creating TypeHolder<" << typeid(T).name() << ">" << endl;
+        cerr << "Creating TypeHolder<" << get_pretty_type_name<T>() << ">" << endl;
     }
 };
 
@@ -824,19 +824,27 @@ struct TypeParser {
         cerr << "\nTypeParser::parse_type called with type: " << type << endl;
         
         ResultType result{TypeHolder<typename TypesPackGetAt<0, Types...>::type>{}};
+        bool found = false;
         
         auto try_match = [&](auto dummy) -> bool {
             using T = decltype(dummy);
             if (type_matches<T>(type)) {
                 std::cout << "Match found! Type: " << get_pretty_type_name<T>() << std::endl;
                 result = TypeHolder<T>{};
+                found = true;
                 return true;
             }
             std::cout << "Trying type: " << get_pretty_type_name<T>() << std::endl;
             return false;
         };
         
-        bool found = (try_match(Types{}) || ...);
+        (try_match(Types{}) || ...);
+        
+        if (!found) {
+            cerr << "No matching type found for: " << type << endl;
+            throw std::runtime_error("Type not found");
+        }
+        
         return result;
     }
 
@@ -870,7 +878,7 @@ auto get_type_wrapper(const string& type) {
     
     return std::visit([](auto&& x) -> TypeWrapper<void> {
         using ActualType = typename std::decay_t<decltype(x)>::type;
-        cerr << "Creating TypeWrapper<" << typeid(ActualType).name() << ">" << endl;
+        cerr << "Creating TypeWrapper<" << get_pretty_type_name<ActualType>() << ">" << endl;
         return TypeWrapper<ActualType>{};
     }, result);
     #undef FIXED
@@ -880,35 +888,39 @@ auto get_type_wrapper(const string& type) {
 
 bool create_and_run_simulation(const string& p_type, const string& v_type, const string& v_flow_type, 
                              size_t n, size_t m) {
-    cerr << "\nCreating simulation with types:" << endl;
-    cerr << "p_type: " << p_type << endl;
-    cerr << "v_type: " << v_type << endl;
-    cerr << "v_flow_type: " << v_flow_type << endl;
+    try {
+        cerr << "\nCreating simulation with types:" << endl;
+        cerr << "p_type: " << p_type << endl;
+        cerr << "v_type: " << v_type << endl;
+        cerr << "v_flow_type: " << v_flow_type << endl;
 
-    auto p_wrapper = get_type_wrapper<void>(p_type);
-    using P = decltype(get_type_wrapper<void>(p_type));
-    cerr << "P is: " << p_wrapper.get_type_string() << std::endl;
-    
-    auto v_wrapper = get_type_wrapper<void>(v_type);
-    using V = decltype(get_type_wrapper<void>(v_type));
-    cerr << "V is: " << v_wrapper.get_type_string() << std::endl;
-    
-    auto vf_wrapper = get_type_wrapper<void>(v_flow_type);
-    using VF = decltype(get_type_wrapper<void>(v_flow_type));
-    cerr << "VF is: " << vf_wrapper.get_type_string() << std::endl;
+        auto p_wrapper = get_type_wrapper<void>(p_type);
+        using P = typename std::decay_t<decltype(p_wrapper)>::type;
+        cerr << "P is: " << p_wrapper.get_type_string() << std::endl;
+        
+        auto v_wrapper = get_type_wrapper<void>(v_type);
+        using V = typename std::decay_t<decltype(v_wrapper)>::type;
+        cerr << "V is: " << v_wrapper.get_type_string() << std::endl;
+        
+        auto vf_wrapper = get_type_wrapper<void>(v_flow_type);
+        using VF = typename std::decay_t<decltype(vf_wrapper)>::type;
+        cerr << "VF is: " << vf_wrapper.get_type_string() << std::endl;
 
-    cerr << "\nType resolution complete" << endl;
-    cerr << "P is void? " << std::is_same_v<P, void> << endl;
-    cerr << "V is void? " << std::is_same_v<V, void> << endl;
-    cerr << "VF is void? " << std::is_same_v<VF, void> << endl;
-
-    if constexpr (!std::is_same_v<P, void> && !std::is_same_v<V, void> && !std::is_same_v<VF, void>) {
-        cerr << "All types resolved successfully" << endl;
-        run_simulation<P, V, VF>(n, m);
-        return true;
+        cerr << "\nType resolution complete" << endl;
+        
+        if constexpr (std::is_same_v<P, void> || std::is_same_v<V, void> || std::is_same_v<VF, void>) {
+            cerr << "Error: Cannot create simulation with void types" << endl;
+            return false;
+        } else {
+            cerr << "All types resolved successfully" << endl;
+            run_simulation<P, V, VF>(n, m);
+            return true;
+        }
     }
-    cerr << "Failed to resolve types" << endl;
-    return false;
+    catch (const std::exception& e) {
+        cerr << "Error: " << e.what() << endl;
+        return false;
+    }
 }
 
 string get_arg(string_view arg_name, int argc, char** argv, string_view default_value) {
