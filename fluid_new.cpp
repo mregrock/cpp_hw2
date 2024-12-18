@@ -327,131 +327,156 @@ auto min_value(const T1& a, const T2& b) {
     return converted_a < converted_b ? converted_a : converted_b;
 }
 
-template<
-    typename PressureType = Fixed<32, 16>,
-    typename VelocityType = Fixed<32, 16>,
-    typename VFlowType = Fixed<32, 16>,
-    size_t SizeN = DEFAULT_N,
-    size_t SizeM = DEFAULT_M
->
+template<typename PressureType, typename VelocityType, typename VFlowType, size_t N = DEFAULT_N, size_t M = DEFAULT_M>
 class FluidSimulator {
 private:
+    static constexpr size_t T = 1'000'000;
     static constexpr std::array<pair<int, int>, 4> deltas{{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
+    
+    char field[N][M + 1];
+    PressureType p[N][M]{}, old_p[N][M];
+    int last_use[N][M]{};
+    int UT = 0;
+    mt19937 rnd{1337};
+    PressureType rho[256];
 
-    SimulationState<PressureType, VelocityType, VFlowType, SizeN, SizeM>& state;
+    struct VectorField {
+        array<VelocityType, 4> v[N][M]{};
+        
+        VelocityType& get(int x, int y, int dx, int dy) {
+            size_t i = ranges::find(deltas, pair(dx, dy)) - deltas.begin();
+            assert(i < deltas.size());
+            return v[x][y][i];
+        }
+
+        VelocityType& add(int x, int y, int dx, int dy, VelocityType dv) {
+            return get(x, y, dx, dy) += dv;
+        }
+    };
+
+    VectorField velocity{}, velocity_flow{};
+    int dirs[N][M]{};
 
     struct ParticleParams {
         char type;
         PressureType cur_p;
         array<VelocityType, 4> v;
-        char (&field)[SizeN][SizeM + 1];
-        PressureType (&p)[SizeN][SizeM];
-        VectorField<VelocityType, SizeN, SizeM>& velocity;
 
-        ParticleParams(
-            char (&f)[SizeN][SizeM + 1],
-            PressureType (&p_arr)[SizeN][SizeM],
-            VectorField<VelocityType, SizeN, SizeM>& vel
-        ) : field(f), p(p_arr), velocity(vel) {}
-
-        void swap_with(int x, int y) {
-            swap(field[x][y], type);
-            swap(p[x][y], cur_p);
-            swap(velocity.v[x][y], v);
+        void swap_with(FluidSimulator* sim, int x, int y) {
+            swap(sim->field[x][y], type);
+            swap(sim->p[x][y], cur_p);
+            swap(sim->velocity.v[x][y], v);
         }
     };
 
-    using FlowResult = tuple<PressureType, bool, pair<int, int>>;
-    
-    FlowResult do_propagate_flow(int x, int y, PressureType lim) {
-        state.last_use[x][y] = state.UT - 1;
-        PressureType ret = 0;
+    template<typename T>
+    PressureType to_pressure(T value) {
+        if constexpr (std::is_same_v<T, PressureType>) {
+            return value;
+        } else {
+            return PressureType(value);
+        }
+    }
+
+    template<typename T>
+    VelocityType to_velocity(T value) {
+        if constexpr (std::is_same_v<T, VelocityType>) {
+            return value;
+        } else {
+            return VelocityType(value);
+        }
+    }
+
+    template<typename T>
+    VFlowType to_flow(T value) {
+        if constexpr (std::is_same_v<T, VFlowType>) {
+            return value;
+        } else {
+            return VFlowType(value);
+        }
+    }
+
+    tuple<VelocityType, bool, pair<int, int>> propagate_flow(int x, int y, VelocityType lim) {
+        last_use[x][y] = UT - 1;
+        VelocityType ret = 0;
         for (auto [dx, dy] : deltas) {
             int nx = x + dx, ny = y + dy;
-            if (state.field[nx][ny] != '#' && state.last_use[nx][ny] < state.UT) {
-                auto cap = state.velocity.get(x, y, dx, dy);
-                auto flow = state.velocity_flow.get(x, y, dx, dy);
-                if (flow == cap) {
-                    continue;
+            if (field[nx][ny] != '#' && last_use[nx][ny] < UT) {
+                auto cap = velocity.get(x, y, dx, dy);
+                auto flow = velocity_flow.get(x, y, dx, dy);
+                if (flow == cap) continue;
+                
+                auto vp = min(lim, cap - flow);
+                if (last_use[nx][ny] == UT - 1) {
+                    velocity_flow.add(x, y, dx, dy, vp);
+                    last_use[x][y] = UT;
+                    return {vp, true, {nx, ny}};
                 }
-                auto vp = min_value(lim, subtract(cap, flow));
-                if (state.last_use[nx][ny] == state.UT - 1) {
-                    state.velocity_flow.add(x, y, dx, dy, vp);
-                    state.last_use[x][y] = state.UT;
-                    return FlowResult{vp, 1, {nx, ny}};
-                }
-                auto [t, prop, end] = do_propagate_flow(nx, ny, vp);
+                auto [t, prop, end] = propagate_flow(nx, ny, vp);
                 ret += t;
                 if (prop) {
-                    state.velocity_flow.add(x, y, dx, dy, t);
-                    state.last_use[x][y] = state.UT;
-                    return FlowResult{t, prop && end != pair(x, y), end};
+                    velocity_flow.add(x, y, dx, dy, t);
+                    last_use[x][y] = UT;
+                    return {t, prop && end != pair(x, y), end};
                 }
             }
         }
-        state.last_use[x][y] = state.UT;
-        return FlowResult{ret, 0, {0, 0}};
+        last_use[x][y] = UT;
+        return {ret, false, {0, 0}};
     }
 
-public:
-    explicit FluidSimulator(SimulationState<PressureType, VelocityType, VFlowType, SizeN, SizeM>& simulation_state)
-        : state(simulation_state)
-    {
-        initialize();
+    VelocityType random01() {
+        return VelocityType(static_cast<double>(rnd() & ((1 << 16) - 1)) / (1 << 16));
     }
 
-    void initialize() {
-        state.rho[' '] = PressureType(0.01);
-        state.rho['.'] = PressureType(1000);
-
-        for (size_t x = 0; x < SizeN; ++x) {
-            for (size_t y = 0; y < SizeM; ++y) {
-                if (state.field[x][y] == '#')
-                    continue;
-                for (auto [dx, dy] : deltas) {
-                    state.dirs[x][y] += (state.field[x + dx][y + dy] != '#');
+    void propagate_stop(int x, int y, bool force = false) {
+        if (!force) {
+            bool stop = true;
+            for (auto [dx, dy] : deltas) {
+                int nx = x + dx, ny = y + dy;
+                if (field[nx][ny] != '#' && last_use[nx][ny] < UT - 1 && velocity.get(x, y, dx, dy) > VelocityType(0)) {
+                    stop = false;
+                    break;
                 }
             }
+            if (!stop) return;
         }
-    }
-
-    PressureType get_random01() {
-        return NumericTraits<PressureType>::from_raw(state.rnd() & ((1 << 16) - 1));
-    }
-
-    PressureType get_move_prob(int x, int y) {
-        PressureType sum = 0;
-        for (size_t i = 0; i < deltas.size(); ++i) {
-            auto [dx, dy] = deltas[i];
+        last_use[x][y] = UT;
+        for (auto [dx, dy] : deltas) {
             int nx = x + dx, ny = y + dy;
-            if (state.field[nx][ny] == '#' || state.last_use[nx][ny] == state.UT) {
-                continue;
-            }
-            auto v = state.velocity.get(x, y, dx, dy);
-            if (v < 0) {
-                continue;
-            }
-            sum = add(sum, v);
+            if (field[nx][ny] == '#' || last_use[nx][ny] == UT || velocity.get(x, y, dx, dy) > VelocityType(0)) continue;
+            propagate_stop(nx, ny);
+        }
+    }
+
+    VelocityType move_prob(int x, int y) {
+        VelocityType sum = 0;
+        for (auto [dx, dy] : deltas) {
+            int nx = x + dx, ny = y + dy;
+            if (field[nx][ny] == '#' || last_use[nx][ny] == UT) continue;
+            auto v = velocity.get(x, y, dx, dy);
+            if (v < VelocityType(0)) continue;
+            sum += v;
         }
         return sum;
     }
 
-    bool do_propagate_move(int x, int y, bool is_first) {
-        state.last_use[x][y] = state.UT - is_first;
+    bool propagate_move(int x, int y, bool is_first) {
+        last_use[x][y] = UT - is_first;
         bool ret = false;
         int nx = -1, ny = -1;
         do {
-            std::array<PressureType, deltas.size()> tres;
-            PressureType sum = 0;
+            array<VelocityType, 4> tres;
+            VelocityType sum = 0;
             for (size_t i = 0; i < deltas.size(); ++i) {
                 auto [dx, dy] = deltas[i];
                 int nx = x + dx, ny = y + dy;
-                if (state.field[nx][ny] == '#' || state.last_use[nx][ny] == state.UT) {
+                if (field[nx][ny] == '#' || last_use[nx][ny] == UT) {
                     tres[i] = sum;
                     continue;
                 }
-                auto v = state.velocity.get(x, y, dx, dy);
-                if (v < 0) {
+                auto v = velocity.get(x, y, dx, dy);
+                if (v < VelocityType(0)) {
                     tres[i] = sum;
                     continue;
                 }
@@ -459,173 +484,152 @@ public:
                 tres[i] = sum;
             }
 
-            if (sum == 0) {
-                break;
-            }
+            if (sum == VelocityType(0)) break;
 
-            PressureType p = get_random01() * sum;
-            size_t d = std::ranges::upper_bound(tres, p) - tres.begin();
+            VelocityType p = random01() * sum;
+            size_t d = ranges::upper_bound(tres, p) - tres.begin();
 
             auto [dx, dy] = deltas[d];
             nx = x + dx;
             ny = y + dy;
-            assert(state.velocity.get(x, y, dx, dy) > 0 && state.field[nx][ny] != '#' && state.last_use[nx][ny] < state.UT);
+            assert(velocity.get(x, y, dx, dy) > VelocityType(0) && field[nx][ny] != '#' && last_use[nx][ny] < UT);
 
-            ret = (state.last_use[nx][ny] == state.UT - 1 || do_propagate_move(nx, ny, false));
+            ret = (last_use[nx][ny] == UT - 1 || propagate_move(nx, ny, false));
         } while (!ret);
-        
-        state.last_use[x][y] = state.UT;
-        for (size_t i = 0; i < deltas.size(); ++i) {
-            auto [dx, dy] = deltas[i];
+
+        last_use[x][y] = UT;
+        for (auto [dx, dy] : deltas) {
             int nx = x + dx, ny = y + dy;
-            if (state.field[nx][ny] != '#' && state.last_use[nx][ny] < state.UT - 1 && state.velocity.get(x, y, dx, dy) < 0) {
-                do_propagate_stop(nx, ny);
+            if (field[nx][ny] != '#' && last_use[nx][ny] < UT - 1 && velocity.get(x, y, dx, dy) < VelocityType(0)) {
+                propagate_stop(nx, ny);
             }
         }
-        if (ret) {
-            if (!is_first) {
-                ParticleParams pp(state.field, state.p, state.velocity);
-                pp.swap_with(x, y);
-                pp.swap_with(nx, ny);
-                pp.swap_with(x, y);
-            }
+        if (ret && !is_first) {
+            ParticleParams pp{};
+            pp.swap_with(this, x, y);
+            pp.swap_with(this, nx, ny);
+            pp.swap_with(this, x, y);
         }
         return ret;
     }
 
-    void do_propagate_stop(int x, int y, bool force = false) {
-        if (!force) {
-            bool stop = true;
-            for (auto [dx, dy] : deltas) {
-                int nx = x + dx, ny = y + dy;
-                if (state.field[nx][ny] != '#' && state.last_use[nx][ny] < state.UT - 1 && state.velocity.get(x, y, dx, dy) > 0) {
-                    stop = false;
-                    break;
-                }
-            }
-            if (!stop) {
-                return;
-            }
-        }
-        state.last_use[x][y] = state.UT;
-        for (auto [dx, dy] : deltas) {
-            int nx = x + dx, ny = y + dy;
-            if (state.field[nx][ny] == '#' || state.last_use[nx][ny] == state.UT || state.velocity.get(x, y, dx, dy) > 0) {
-                continue;
-            }
-            do_propagate_stop(nx, ny);
-        }
-    }
-
-    void simulate_step(PressureType g, size_t iteration) {
-        PressureType total_delta_p = 0;
+public:
+    FluidSimulator(const SimulationState<PressureType, VelocityType, VFlowType, N, M>& state) {
+        memcpy(field, state.field, sizeof(field));
+        rho[' '] = PressureType(0.01);
+        rho['.'] = PressureType(1000);
         
-        // Apply external forces
-        for (size_t x = 0; x < SizeN; ++x) {
-            for (size_t y = 0; y < SizeM; ++y) {
-                if (state.field[x][y] == '#')
-                    continue;
-                if (state.field[x + 1][y] != '#')
-                    state.velocity.add(x, y, 1, 0, g);
-            }
-        }
-
-        // Apply forces from p
-        memcpy(state.old_p, state.p, sizeof(state.p));
-        for (size_t x = 0; x < SizeN; ++x) {
-            for (size_t y = 0; y < SizeM; ++y) {
-                if (state.field[x][y] == '#')
-                    continue;
+        for (size_t x = 0; x < N; ++x) {
+            for (size_t y = 0; y < M; ++y) {
+                if (field[x][y] == '#') continue;
                 for (auto [dx, dy] : deltas) {
-                    int nx = x + dx, ny = y + dy;
-                    if (state.field[nx][ny] != '#' && state.old_p[nx][ny] < state.old_p[x][y]) {
-                        auto delta_p = state.old_p[x][y] - state.old_p[nx][ny];
-                        auto force = delta_p;
-                        auto &contr = state.velocity.get(nx, ny, -dx, -dy);
-                        if (contr * state.rho[(int) state.field[nx][ny]] >= force) {
-                            contr -= force / state.rho[(int) state.field[nx][ny]];
-                            continue;
-                        }
-                        force -= contr * state.rho[(int) state.field[nx][ny]];
-                        contr = 0;
-                        state.velocity.add(x, y, dx, dy, force / state.rho[(int) state.field[x][y]]);
-                        state.p[x][y] -= force / PressureType(state.dirs[x][y]);
-                        total_delta_p -= force / PressureType(state.dirs[x][y]);
-                    }
+                    dirs[x][y] += (field[x + dx][y + dy] != '#');
                 }
-            }
-        }
-
-        // Make flow from velocities
-        state.velocity_flow = {};
-        bool prop = false;
-        do {
-            state.UT += 2;
-            prop = 0;
-            for (size_t x = 0; x < SizeN; ++x) {
-                for (size_t y = 0; y < SizeM; ++y) {
-                    if (state.field[x][y] != '#' && state.last_use[x][y] != state.UT) {
-                        auto [t, local_prop, _] = do_propagate_flow(x, y, 1);
-                        if (t > 0) {
-                            prop = 1;
-                        }
-                    }
-                }
-            }
-        } while (prop);
-
-        // Recalculate p with kinetic energy
-        for (size_t x = 0; x < SizeN; ++x) {
-            for (size_t y = 0; y < SizeM; ++y) {
-                if (state.field[x][y] == '#')
-                    continue;
-                for (auto [dx, dy] : deltas) {
-                    auto old_v = state.velocity.get(x, y, dx, dy);
-                    auto new_v = state.velocity_flow.get(x, y, dx, dy);
-                    if (old_v > 0) {
-                        assert(new_v <= old_v);
-                        state.velocity.get(x, y, dx, dy) = new_v;
-                        auto force = (old_v - new_v) * state.rho[(int) state.field[x][y]];
-                        if (state.field[x][y] == '.')
-                            force *= PressureType(0.8);
-                        if (state.field[x + dx][y + dy] == '#') {
-                            state.p[x][y] += force / PressureType(state.dirs[x][y]);
-                            total_delta_p += force / PressureType(state.dirs[x][y]);
-                        } else {
-                            state.p[x + dx][y + dy] += force / PressureType(state.dirs[x + dx][y + dy]);
-                            total_delta_p += force / PressureType(state.dirs[x + dx][y + dy]);
-                        }
-                    }
-                }
-            }
-        }
-
-        state.UT += 2;
-        prop = false;
-        for (size_t x = 0; x < SizeN; ++x) {
-            for (size_t y = 0; y < SizeM; ++y) {
-                if (state.field[x][y] != '#' && state.last_use[x][y] != state.UT) {
-                    if (get_random01() < get_move_prob(x, y)) {
-                        prop = true;
-                        do_propagate_move(x, y, true);
-                    } else {
-                        do_propagate_stop(x, y, true);
-                    }
-                }
-            }
-        }
-
-        if (prop) {
-            cout << "Tick " << iteration << ":\n";
-            for (size_t x = 0; x < SizeN; ++x) {
-                cout << state.field[x] << "\n";
             }
         }
     }
 
-    void run(PressureType g = PressureType(0.1)) {
-        for (size_t i = 0; i < 1'000'000; ++i) {
-            simulate_step(g, i);
+    void run() {
+        PressureType g = PressureType(0.1);
+        
+        for (size_t i = 0; i < T; ++i) {
+            PressureType total_delta_p = 0;
+            
+            // Apply external forces
+            for (size_t x = 0; x < N; ++x) {
+                for (size_t y = 0; y < M; ++y) {
+                    if (field[x][y] == '#') continue;
+                    if (field[x + 1][y] != '#')
+                        velocity.add(x, y, 1, 0, VelocityType(g));
+                }
+            }
+
+            // Apply forces from p
+            memcpy(old_p, p, sizeof(p));
+            for (size_t x = 0; x < N; ++x) {
+                for (size_t y = 0; y < M; ++y) {
+                    if (field[x][y] == '#') continue;
+                    for (auto [dx, dy] : deltas) {
+                        int nx = x + dx, ny = y + dy;
+                        if (field[nx][ny] != '#' && old_p[nx][ny] < old_p[x][y]) {
+                            auto delta_p = old_p[x][y] - old_p[nx][ny];
+                            auto force = delta_p;
+                            auto& contr = velocity.get(nx, ny, -dx, -dy);
+                            if (contr * rho[(int)field[nx][ny]] >= force) {
+                                contr -= force / rho[(int)field[nx][ny]];
+                                continue;
+                            }
+                            force -= contr * rho[(int)field[nx][ny]];
+                            contr = 0;
+                            velocity.add(x, y, dx, dy, force / rho[(int)field[x][y]]);
+                            p[x][y] -= force / dirs[x][y];
+                            total_delta_p -= force / dirs[x][y];
+                        }
+                    }
+                }
+            }
+
+            // Make flow from velocities
+            velocity_flow = {};
+            bool prop = false;
+            do {
+                UT += 2;
+                prop = false;
+                for (size_t x = 0; x < N; ++x) {
+                    for (size_t y = 0; y < M; ++y) {
+                        if (field[x][y] != '#' && last_use[x][y] != UT) {
+                            auto [t, local_prop, _] = propagate_flow(x, y, VelocityType(1));
+                            if (t > VelocityType(0)) prop = true;
+                        }
+                    }
+                }
+            } while (prop);
+
+            // Recalculate p with kinetic energy
+            for (size_t x = 0; x < N; ++x) {
+                for (size_t y = 0; y < M; ++y) {
+                    if (field[x][y] == '#') continue;
+                    for (auto [dx, dy] : deltas) {
+                        auto old_v = velocity.get(x, y, dx, dy);
+                        auto new_v = velocity_flow.get(x, y, dx, dy);
+                        if (old_v > VelocityType(0)) {
+                            assert(new_v <= old_v);
+                            velocity.get(x, y, dx, dy) = new_v;
+                            auto force = (old_v - new_v) * rho[(int)field[x][y]];
+                            if (field[x][y] == '.') force *= PressureType(0.8);
+                            if (field[x + dx][y + dy] == '#') {
+                                p[x][y] += force / to_pressure(dirs[x][y]);
+                                total_delta_p += force / to_pressure(dirs[x][y]);
+                            } else {
+                                p[x + dx][y + dy] += force / to_pressure(dirs[x + dx][y + dy]);
+                                total_delta_p += force / to_pressure(dirs[x + dx][y + dy]);
+                            }
+                        }
+                    }
+                }
+            }
+
+            UT += 2;
+            prop = false;
+            for (size_t x = 0; x < N; ++x) {
+                for (size_t y = 0; y < M; ++y) {
+                    if (field[x][y] != '#' && last_use[x][y] != UT) {
+                        if (random01() < move_prob(x, y)) {
+                            prop = true;
+                            propagate_move(x, y, true);
+                        } else {
+                            propagate_stop(x, y, true);
+                        }
+                    }
+                }
+            }
+
+            if (prop) {
+                cout << "Tick " << i << ":\n";
+                for (size_t x = 0; x < N; ++x) {
+                    cout << field[x] << "\n";
+                }
+            }
         }
     }
 };
@@ -641,7 +645,6 @@ void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M) {
     simulator.run();
 }
 
-// Добавьте эту функцию для получения красивого имени типа (перед определением TypeWrapper)
 template<typename T>
 std::string get_pretty_type_name() {
     if constexpr (std::is_same_v<T, float>) {
@@ -663,13 +666,11 @@ struct TypeWrapper {
     TypeWrapper() = default;
     TypeWrapper(const T& v) : value(v) {}
     
-    // Составные операторы присваивания
     TypeWrapper& operator+=(const TypeWrapper& other) { value += other.value; return *this; }
     TypeWrapper& operator-=(const TypeWrapper& other) { value -= other.value; return *this; }
     TypeWrapper& operator*=(const TypeWrapper& other) { value *= other.value; return *this; }
     TypeWrapper& operator/=(const TypeWrapper& other) { value /= other.value; return *this; }
     
-    // Составные операторы присваивания с другими типами
     template<typename U>
     TypeWrapper& operator+=(const U& other) { value += other; return *this; }
     template<typename U>
@@ -679,14 +680,12 @@ struct TypeWrapper {
     template<typename U>
     TypeWrapper& operator/=(const U& other) { value /= other; return *this; }
     
-    // Операторы сравнения
     bool operator<(const TypeWrapper& other) const { return value < other.value; }
     bool operator>(const TypeWrapper& other) const { return value > other.value; }
     bool operator==(const TypeWrapper& other) const { return value == other.value; }
     bool operator<=(const TypeWrapper& other) const { return value <= other.value; }
     bool operator>=(const TypeWrapper& other) const { return value >= other.value; }
     
-    // Операторы сравнения с другими типами
     template<typename U>
     bool operator<(const U& other) const { return value < other; }
     template<typename U>
@@ -698,13 +697,11 @@ struct TypeWrapper {
     template<typename U>
     bool operator==(const U& other) const { return value == other; }
     
-    // Арифметические операторы
     TypeWrapper operator+(const TypeWrapper& other) const { return TypeWrapper(value + other.value); }
     TypeWrapper operator-(const TypeWrapper& other) const { return TypeWrapper(value - other.value); }
     TypeWrapper operator*(const TypeWrapper& other) const { return TypeWrapper(value * other.value); }
     TypeWrapper operator/(const TypeWrapper& other) const { return TypeWrapper(value / other.value); }
     
-    // Конвертация из числовых типов
     template<typename U, typename = std::enable_if_t<std::is_arithmetic_v<U>>>
     TypeWrapper(U v) : value(T(v)) {}
 
@@ -725,13 +722,11 @@ struct TypeWrapper<void> {
     template<typename U>
     TypeWrapper& operator=(const U&) { return *this; }
     
-    // Составные операторы присваивания
     TypeWrapper& operator+=(const TypeWrapper&) { return *this; }
     TypeWrapper& operator-=(const TypeWrapper&) { return *this; }
     TypeWrapper& operator*=(const TypeWrapper&) { return *this; }
     TypeWrapper& operator/=(const TypeWrapper&) { return *this; }
     
-    // Составные операторы присваивания с другими типами
     template<typename U>
     TypeWrapper& operator+=(const U&) { return *this; }
     template<typename U>
@@ -741,14 +736,12 @@ struct TypeWrapper<void> {
     template<typename U>
     TypeWrapper& operator/=(const U&) { return *this; }
     
-    // Операторы сравнения
     bool operator<(const TypeWrapper&) const { return false; }
     bool operator>(const TypeWrapper&) const { return false; }
     bool operator==(const TypeWrapper&) const { return true; }
     bool operator<=(const TypeWrapper&) const { return true; }
     bool operator>=(const TypeWrapper&) const { return true; }
     
-    // Операторы сравнения с другими типами
     template<typename U>
     bool operator<(const U&) const { return false; }
     template<typename U>
@@ -760,7 +753,6 @@ struct TypeWrapper<void> {
     template<typename U>
     bool operator==(const U&) const { return true; }
     
-    // Арифметические операции
     TypeWrapper operator+(const TypeWrapper&) const { return TypeWrapper{}; }
     TypeWrapper operator-(const TypeWrapper&) const { return TypeWrapper{}; }
     TypeWrapper operator*(const TypeWrapper&) const { return TypeWrapper{}; }
@@ -771,7 +763,6 @@ struct TypeWrapper<void> {
     }
 };
 
-// Операторы сравнения с другими типами (обратный порядок)
 template<typename T, typename U>
 bool operator<(const U& a, const TypeWrapper<T>& b) { return b > a; }
 template<typename T, typename U>
@@ -783,7 +774,6 @@ bool operator>=(const U& a, const TypeWrapper<T>& b) { return b <= a; }
 template<typename T, typename U>
 bool operator==(const U& a, const TypeWrapper<T>& b) { return b == a; }
 
-// Перемещаем функцию parse_fixed_params выше
 pair<size_t, size_t> parse_fixed_params(const string& type) {
     size_t start = type.find('(') + 1;
     size_t comma = type.find(',', start);
@@ -867,7 +857,11 @@ private:
     }
 };
 
-template<typename T>
+template <typename... Ts>
+struct WrapTypes {
+    using type = std::variant<TypeWrapper<Ts>...>;
+};
+
 auto get_type_wrapper(const string& type) {
     #define FIXED(N,K) Fixed<N,K>
     #define FLOAT float
@@ -875,47 +869,133 @@ auto get_type_wrapper(const string& type) {
     
     using Parser = TypeParser<TYPES>;
     auto result = Parser::parse_type(type);
-    
-    return std::visit([](auto&& x) -> TypeWrapper<void> {
+    using TypeWrapperVariant = typename WrapTypes<TYPES>::type;
+    #undef FIXED
+    #undef FLOAT
+    #undef DOUBLE
+    return std::visit([](auto&& x) -> TypeWrapperVariant {
         using ActualType = typename std::decay_t<decltype(x)>::type;
         cerr << "Creating TypeWrapper<" << get_pretty_type_name<ActualType>() << ">" << endl;
         return TypeWrapper<ActualType>{};
     }, result);
-    #undef FIXED
-    #undef FLOAT
-    #undef DOUBLE
+}
+
+template<typename T>
+static bool matches_type(const string& type) {
+    if constexpr (std::is_same_v<T, float>) {
+        return type == "FLOAT";
+    } else if constexpr (std::is_same_v<T, double>) {
+        return type == "DOUBLE";
+    } else if constexpr (is_fixed_v<T>) {
+        if (!type.starts_with("FIXED(")) return false;
+        auto [bits, frac] = parse_fixed_params(type);
+        return bits == T::bits && frac == T::frac;
+    }
+    return false;
+}
+
+template<typename... Types>
+struct TypesList {
+    static constexpr size_t size = sizeof...(Types);
+    template<size_t I>
+    using type_at = typename std::tuple_element<I, std::tuple<Types...>>::type;
+};
+
+template<typename AllowedTypes, typename SelectedTypes>
+struct TypeSelector {
+    template<typename... Selected>
+    static bool try_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
+                               size_t n, size_t m) {
+        return try_all_p_types<0>(p_type, v_type, v_flow_type, n, m);
+    }
+
+private:
+    template<size_t I>
+    static bool try_all_p_types(const string& p_type, const string& v_type, const string& v_flow_type,
+                               size_t n, size_t m) {
+        if constexpr (I >= AllowedTypes::size) {
+            return false;
+        } else {
+            using P = typename AllowedTypes::template type_at<I>;
+            return try_with_p_type<P>(p_type, v_type, v_flow_type, n, m) ||
+                   try_all_p_types<I + 1>(p_type, v_type, v_flow_type, n, m);
+        }
+    }
+
+    template<typename P>
+    static bool try_with_p_type(const string& p_type, const string& v_type, const string& v_flow_type,
+                               size_t n, size_t m) {
+        if (!matches_type<P>(p_type)) return false;
+        return try_all_v_types<P, 0>(p_type, v_type, v_flow_type, n, m);
+    }
+
+    template<typename P, size_t I>
+    static bool try_all_v_types(const string& p_type, const string& v_type, const string& v_flow_type,
+                               size_t n, size_t m) {
+        if constexpr (I >= AllowedTypes::size) {
+            return false;
+        } else {
+            using V = typename AllowedTypes::template type_at<I>;
+            return try_with_v_type<P, V>(p_type, v_type, v_flow_type, n, m) ||
+                   try_all_v_types<P, I + 1>(p_type, v_type, v_flow_type, n, m);
+        }
+    }
+
+    template<typename P, typename V>
+    static bool try_with_v_type(const string& p_type, const string& v_type, const string& v_flow_type,
+                               size_t n, size_t m) {
+        if (!matches_type<V>(v_type)) return false;
+        return try_all_vf_types<P, V, 0>(p_type, v_type, v_flow_type, n, m);
+    }
+
+    template<typename P, typename V, size_t I>
+    static bool try_all_vf_types(const string& p_type, const string& v_type, const string& v_flow_type,
+                                size_t n, size_t m) {
+        if constexpr (I >= AllowedTypes::size) {
+            return false;
+        } else {
+            using VF = typename AllowedTypes::template type_at<I>;
+            return try_with_vf_type<P, V, VF>(p_type, v_type, v_flow_type, n, m) ||
+                   try_all_vf_types<P, V, I + 1>(p_type, v_type, v_flow_type, n, m);
+        }
+    }
+
+    template<typename P, typename V, typename VF>
+    static bool try_with_vf_type(const string& p_type, const string& v_type, const string& v_flow_type,
+                                size_t n, size_t m) {
+        if (!matches_type<VF>(v_flow_type)) return false;
+
+        cerr << "Found matching types:\n"
+             << "P: " << get_pretty_type_name<P>() << "\n"
+             << "V: " << get_pretty_type_name<V>() << "\n"
+             << "VF: " << get_pretty_type_name<VF>() << "\n";
+
+        run_simulation<P, V, VF>(n, m);
+        return true;
+    }
+};
+
+template<typename... Types>
+bool try_all_type_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
+                             size_t n, size_t m) {
+    return TypeSelector<TypesList<Types...>, TypesList<>>::try_combinations(p_type, v_type, v_flow_type, n, m);
 }
 
 bool create_and_run_simulation(const string& p_type, const string& v_type, const string& v_flow_type, 
                              size_t n, size_t m) {
     try {
-        cerr << "\nCreating simulation with types:" << endl;
+        cerr << "\nTrying to create simulation with types:" << endl;
         cerr << "p_type: " << p_type << endl;
         cerr << "v_type: " << v_type << endl;
         cerr << "v_flow_type: " << v_flow_type << endl;
-
-        auto p_wrapper = get_type_wrapper<void>(p_type);
-        using P = typename std::decay_t<decltype(p_wrapper)>::type;
-        cerr << "P is: " << p_wrapper.get_type_string() << std::endl;
-        
-        auto v_wrapper = get_type_wrapper<void>(v_type);
-        using V = typename std::decay_t<decltype(v_wrapper)>::type;
-        cerr << "V is: " << v_wrapper.get_type_string() << std::endl;
-        
-        auto vf_wrapper = get_type_wrapper<void>(v_flow_type);
-        using VF = typename std::decay_t<decltype(vf_wrapper)>::type;
-        cerr << "VF is: " << vf_wrapper.get_type_string() << std::endl;
-
-        cerr << "\nType resolution complete" << endl;
-        
-        if constexpr (std::is_same_v<P, void> || std::is_same_v<V, void> || std::is_same_v<VF, void>) {
-            cerr << "Error: Cannot create simulation with void types" << endl;
+        #define FLOAT float
+        #define DOUBLE double
+        #define FIXED(N, K) Fixed<N, K>
+        if (!try_all_type_combinations<TYPES>(p_type, v_type, v_flow_type, n, m)) {
+            cerr << "Error: No matching type combination found" << endl;
             return false;
-        } else {
-            cerr << "All types resolved successfully" << endl;
-            run_simulation<P, V, VF>(n, m);
-            return true;
         }
+        return true;
     }
     catch (const std::exception& e) {
         cerr << "Error: " << e.what() << endl;
@@ -948,10 +1028,82 @@ bool is_valid_type(const string& type) {
     return false;
 }
 
+template<size_t N, size_t K>
+Fixed<N,K> operator+(float a, Fixed<N,K> b) {
+    return Fixed<N,K>(a) + b;
+}
+
+template<size_t N, size_t K>
+Fixed<N,K> operator+(Fixed<N,K> a, float b) {
+    return a + Fixed<N,K>(b);
+}
+
+template<size_t N, size_t K>
+Fixed<N,K> operator-(float a, Fixed<N,K> b) {
+    return Fixed<N,K>(a) - b;
+}
+
+template<size_t N, size_t K>
+Fixed<N,K> operator-(Fixed<N,K> a, float b) {
+    return a - Fixed<N,K>(b);
+}
+
+template<size_t N, size_t K>
+Fixed<N,K> operator*(float a, Fixed<N,K> b) {
+    return Fixed<N,K>(a) * b;
+}
+
+template<size_t N, size_t K>
+Fixed<N,K> operator*(Fixed<N,K> a, float b) {
+    return a * Fixed<N,K>(b);
+}
+
+template<size_t N, size_t K>
+Fixed<N,K> operator/(float a, Fixed<N,K> b) {
+    return Fixed<N,K>(a) / b;
+}
+
+template<size_t N, size_t K>
+Fixed<N,K> operator/(Fixed<N,K> a, float b) {
+    return a / Fixed<N,K>(b);
+}
+
+template<size_t N, size_t K>
+Fixed<N,K>& operator+=(float& a, Fixed<N,K> b) {
+    a = static_cast<float>(Fixed<N,K>(a) + b);
+    return a;
+}
+
+template<size_t N, size_t K>
+float& operator-=(float& a, Fixed<N,K> b) {
+    a = static_cast<float>(Fixed<N,K>(a) - b);
+    return a;
+}
+
+template<size_t N, size_t K>
+Fixed<N,K> operator+(double a, Fixed<N,K> b) {
+    return Fixed<N,K>(a) + b;
+}
+
+template<size_t N, size_t K>
+Fixed<N,K>& operator-=(Fixed<N,K>& a, float b) { 
+    return a = a - Fixed<N,K>(b); 
+}
+
+template<size_t N, size_t K>
+Fixed<N,K>& operator+=(Fixed<N,K>& a, float b) { 
+    return a = a + Fixed<N,K>(b); 
+}
+
+template<size_t N, size_t K>
+Fixed<N,K>& operator*=(Fixed<N,K>& a, float b) { 
+    return a = a * Fixed<N,K>(b); 
+}
+
 int main(int argc, char** argv) {
     string p_type = get_arg("--p-type", argc, argv, "FIXED(32,16)");
     string v_type = get_arg("--v-type", argc, argv, "DOUBLE");
-    string v_flow_type = get_arg("--v-flow-type", argc, argv, "FIXED(38,11)");
+    string v_flow_type = get_arg("--v-flow-type", argc, argv, "FLOAT");
     string size_str = get_arg("--size", argc, argv, "S(36,84)");
     
     if (!is_valid_type(p_type)) {
@@ -975,81 +1127,4 @@ int main(int argc, char** argv) {
     }
     
     return 0;
-}
-
-template<typename T, size_t N, size_t K>
-auto operator+(T a, Fixed<N,K> b) {
-    if constexpr (std::is_floating_point_v<T>)
-        return T(a) + T(static_cast<T>(b));
-    else
-        return Fixed<N,K>(a) + b;
-}
-
-template<typename T, size_t N, size_t K>
-auto operator-(T a, Fixed<N,K> b) {
-    if constexpr (std::is_floating_point_v<T>)
-        return T(a) - T(static_cast<T>(b));
-    else
-        return Fixed<N,K>(a) - b;
-}
-
-template<typename T, size_t N, size_t K>
-auto operator*(T a, Fixed<N,K> b) {
-    if constexpr (std::is_floating_point_v<T>)
-        return T(a) * T(static_cast<T>(b));
-    else
-        return Fixed<N,K>(a) * b;
-}
-
-template<typename T, size_t N, size_t K>
-auto operator/(T a, Fixed<N,K> b) {
-    if constexpr (std::is_floating_point_v<T>)
-        return T(a) / T(static_cast<T>(b));
-    else
-        return Fixed<N,K>(a) / b;
-}
-
-template<typename T, size_t N, size_t K>
-auto operator+(Fixed<N,K> a, T b) { return b + a; }
-
-template<typename T, size_t N, size_t K>
-auto operator-(Fixed<N,K> a, T b) {
-    if constexpr (std::is_floating_point_v<T>)
-        return T(static_cast<T>(a)) - T(b);
-    else
-        return a - Fixed<N,K>(b);
-}
-
-template<typename T, size_t N, size_t K>
-auto operator*(Fixed<N,K> a, T b) { return b * a; }
-
-template<typename T, size_t N, size_t K>
-auto operator/(Fixed<N,K> a, T b) {
-    if constexpr (std::is_floating_point_v<T>)
-        return T(static_cast<T>(a)) / T(b);
-    else
-        return a / Fixed<N,K>(b);
-}
-
-template<typename T, size_t N, size_t K>
-bool operator<(Fixed<N,K> a, T b) {
-    if constexpr (std::is_floating_point_v<T>)
-        return T(static_cast<T>(a)) < b;
-    else
-        return a < Fixed<N,K>(b);
-}
-
-template<typename T, size_t N, size_t K>
-bool operator<(T a, Fixed<N,K> b) { return !(b < a); }
-
-template<typename T1, typename T2>
-auto& operator+=(T1& a, const T2& b) {
-    a = add(a, b);
-    return a;
-}
-
-template<typename T1, typename T2>
-auto& operator-=(T1& a, const T2& b) {
-    a = subtract(a, b);
-    return a;
 }
