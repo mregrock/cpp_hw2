@@ -696,9 +696,9 @@ bool is_valid_type(const string& type) {
 }
 
 int main(int argc, char** argv) {
-    string p_type = get_arg("--p-type", argc, argv, "FAST_FIXED(32,16)");
-    string v_type = get_arg("--v-type", argc, argv, "FIXED(31,17)");
-    string v_flow_type = get_arg("--v-flow-type", argc, argv, "DOUBLE");
+    string p_type = get_arg("--p-type", argc, argv, "FAST_FIXED(32, 16)");
+    string v_type = get_arg("--v-type", argc, argv, "FIXED(32, 16)");
+    string v_flow_type = get_arg("--v-flow-type", argc, argv, "FAST_FIXED(32, 16)");
     string size_str = get_arg("--size", argc, argv, "S(36,84)");
     
     if (!is_valid_type(p_type)) {
