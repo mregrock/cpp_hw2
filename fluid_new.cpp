@@ -61,7 +61,7 @@ constexpr char initial_field[DEFAULT_N][DEFAULT_M + 1] = {
 #endif
 
 #ifndef SIZES
-#define SIZES S(36,84)
+#define SIZES S(36,84), S(100,100)
 #endif
 
 struct Size {
@@ -69,20 +69,51 @@ struct Size {
     constexpr Size(size_t n_, size_t m_) : n(n_), m(m_) {}
 };
 
-constexpr Size parse_size(const char* s) {
-    s += 2;
-    size_t n = 0;
-    while (*s >= '0' && *s <= '9') {
-        n = n * 10 + (*s - '0');
-        s++;
+Size parse_size(const string& size_str) {
+    if (!size_str.starts_with("S(")) {
+        throw std::runtime_error("Size must start with S(");
     }
-    s++;
-    size_t m = 0;
-    while (*s >= '0' && *s <= '9') {
-        m = m * 10 + (*s - '0');
-        s++;
+    
+    size_t start = 2;
+    size_t comma = size_str.find(',', start);
+    if (comma == string::npos) {
+        throw std::runtime_error("Invalid size format: missing comma");
     }
+    
+    size_t end = size_str.find(')', comma);
+    if (end == string::npos) {
+        throw std::runtime_error("Invalid size format: missing )");
+    }
+    
+    size_t n = stoul(size_str.substr(start, comma - start));
+    size_t m = stoul(size_str.substr(comma + 1, end - comma - 1));
+    
     return Size(n, m);
+}
+
+template<Size... Sizes>
+struct SizesList {
+    static constexpr size_t size = sizeof...(Sizes);
+    template<size_t I>
+    static constexpr Size get() {
+        constexpr Size arr[] = {Sizes...};
+        return arr[I];
+    }
+};
+
+template<typename List, size_t I = 0>
+constexpr bool matches_size_impl(const Size& size) {
+    if constexpr (I >= List::size) {
+        return false;
+    } else {
+        return (List::template get<I>().n == size.n && List::template get<I>().m == size.m) ||
+               matches_size_impl<List, I + 1>(size);
+    }
+}
+
+template<typename List>
+bool matches_size(const Size& size) {
+    return matches_size_impl<List>(size);
 }
 
 template<typename NumericType, size_t N, size_t M>
@@ -529,64 +560,64 @@ template<typename AllowedTypes, typename SelectedTypes>
 struct TypeSelector {
     template<typename... Selected>
     static bool try_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
-        return try_all_p_types<0>(p_type, v_type, v_flow_type, n, m);
+                               const Size& size) {
+        return try_all_p_types<0>(p_type, v_type, v_flow_type, size);
     }
 
 private:
     template<size_t I>
     static bool try_all_p_types(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
+                               const Size& size) {
         if constexpr (I >= AllowedTypes::size) {
             return false;
         } else {
             using P = typename AllowedTypes::template type_at<I>;
-            return try_with_p_type<P>(p_type, v_type, v_flow_type, n, m) ||
-                   try_all_p_types<I + 1>(p_type, v_type, v_flow_type, n, m);
+            return try_with_p_type<P>(p_type, v_type, v_flow_type, size) ||
+                   try_all_p_types<I + 1>(p_type, v_type, v_flow_type, size);
         }
     }
 
     template<typename P>
     static bool try_with_p_type(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
+                               const Size& size) {
         if (!matches_type<P>(p_type)) return false;
-        return try_all_v_types<P, 0>(p_type, v_type, v_flow_type, n, m);
+        return try_all_v_types<P, 0>(p_type, v_type, v_flow_type, size);
     }
 
     template<typename P, size_t I>
     static bool try_all_v_types(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
+                               const Size& size) {
         if constexpr (I >= AllowedTypes::size) {
             return false;
         } else {
             using V = typename AllowedTypes::template type_at<I>;
-            return try_with_v_type<P, V>(p_type, v_type, v_flow_type, n, m) ||
-                   try_all_v_types<P, I + 1>(p_type, v_type, v_flow_type, n, m);
+            return try_with_v_type<P, V>(p_type, v_type, v_flow_type, size) ||
+                   try_all_v_types<P, I + 1>(p_type, v_type, v_flow_type, size);
         }
     }
 
     template<typename P, typename V>
     static bool try_with_v_type(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
+                               const Size& size) {
         if (!matches_type<V>(v_type)) return false;
-        return try_all_vf_types<P, V, 0>(p_type, v_type, v_flow_type, n, m);
+        return try_all_vf_types<P, V, 0>(p_type, v_type, v_flow_type, size);
     }
 
     template<typename P, typename V, size_t I>
     static bool try_all_vf_types(const string& p_type, const string& v_type, const string& v_flow_type,
-                                size_t n, size_t m) {
+                                const Size& size) {
         if constexpr (I >= AllowedTypes::size) {
             return false;
         } else {
             using VF = typename AllowedTypes::template type_at<I>;
-            return try_with_vf_type<P, V, VF>(p_type, v_type, v_flow_type, n, m) ||
-                   try_all_vf_types<P, V, I + 1>(p_type, v_type, v_flow_type, n, m);
+            return try_with_vf_type<P, V, VF>(p_type, v_type, v_flow_type, size) ||
+                   try_all_vf_types<P, V, I + 1>(p_type, v_type, v_flow_type, size);
         }
     }
 
     template<typename P, typename V, typename VF>
     static bool try_with_vf_type(const string& p_type, const string& v_type, const string& v_flow_type,
-                                size_t n, size_t m) {
+                                const Size& size) {
         if (!matches_type<VF>(v_flow_type)) return false;
 
         cerr << "Found matching types:\n"
@@ -594,29 +625,40 @@ private:
              << "V: " << get_pretty_type_name<V>() << "\n"
              << "VF: " << get_pretty_type_name<VF>() << "\n";
 
-        run_simulation<P, V, VF>(n, m);
+        run_simulation<P, V, VF>(size.n, size.m);
         return true;
     }
 };
 
 template<typename... Types>
 bool try_all_type_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
-                             size_t n, size_t m) {
-    return TypeSelector<TypesList<Types...>, TypesList<>>::try_combinations(p_type, v_type, v_flow_type, n, m);
+                             const Size& size) {
+    return TypeSelector<TypesList<Types...>, TypesList<>>::try_combinations(p_type, v_type, v_flow_type, size);
 }
 
 bool create_and_run_simulation(const string& p_type, const string& v_type, const string& v_flow_type, 
-                             size_t n, size_t m) {
+                             const Size& size) {
     try {
-        cerr << "\nTrying to create simulation with types:" << endl;
+        cerr << "\nTrying to create simulation with:" << endl;
         cerr << "p_type: " << p_type << endl;
         cerr << "v_type: " << v_type << endl;
         cerr << "v_flow_type: " << v_flow_type << endl;
+        cerr << "size: S(" << size.n << "," << size.m << ")" << endl;
+
+        #define S(N, M) Size(N, M)
+        using SizesListType = SizesList<SIZES>;
+        #undef S
+        
+        if (!matches_size<SizesListType>(size)) {
+            cerr << "Error: Unsupported size" << endl;
+            return false;
+        }
+
         #define FLOAT float
         #define DOUBLE double
         #define FIXED(N, K) Fixed<N, K>
         #define FAST_FIXED(N, K) FastFixed<N, K>
-        if (!try_all_type_combinations<TYPES>(p_type, v_type, v_flow_type, n, m)) {
+        if (!try_all_type_combinations<TYPES>(p_type, v_type, v_flow_type, size)) {
             cerr << "Error: No matching type combination found" << endl;
             return false;
         }
@@ -672,10 +714,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto size = parse_size(size_str.c_str());
+    auto size = parse_size(size_str);
     
-    if (!create_and_run_simulation(p_type, v_type, v_flow_type, size.n, size.m)) {
-        cerr << "Failed to create simulation with types: " << p_type << ", " << v_type << ", " << v_flow_type << endl;
+    if (!create_and_run_simulation(p_type, v_type, v_flow_type, size)) {
+        cerr << "Failed to create simulation" << endl;
         return 1;
     }
     
