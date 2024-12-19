@@ -500,7 +500,6 @@ pair<size_t, size_t> parse_fixed_params(const string& type) {
     return {N, K};
 }
 
-template<typename T>
 static bool matches_type(const string& type) {
     if constexpr (std::is_same_v<T, float>) {
         return type == "FLOAT";
