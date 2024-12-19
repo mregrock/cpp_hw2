@@ -13,48 +13,25 @@
 #include "src/fixed.hpp"
 #include "src/fast_fixed.hpp"
 #include "src/fixed_operators.hpp"
+#include <fstream>
+#include <sstream>
 
 using namespace std;
 
 constexpr size_t DEFAULT_N = 36, DEFAULT_M = 84;
-constexpr char initial_field[DEFAULT_N][DEFAULT_M + 1] = {
-    "####################################################################################",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                       .........                                  #",
-    "#..............#            #           .........                                  #",
-    "#..............#            #           .........                                  #",
-    "#..............#            #           .........                                  #",
-    "#..............#            #                                                      #",
-    "#..............#            #                                                      #",
-    "#..............#            #                                                      #",
-    "#..............#            #                                                      #",
-    "#..............#............#                                                      #",
-    "#..............#............#                                                      #",
-    "#..............#............#                                                      #",
-    "#..............#............#                                                      #",
-    "#..............#............#                                                      #",
-    "#..............#............#                                                      #",
-    "#..............#............#                                                      #",
-    "#..............#............#                                                      #",
-    "#..............#............################                     #                 #",
-    "#...........................#....................................#                 #",
-    "#...........................#....................................#                 #",
-    "#...........................#....................................#                 #",
-    "##################################################################                 #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "#                                                                                  #",
-    "####################################################################################",
-};
+
+string get_field_from_file(const string& filename) {
+    ifstream file(filename);
+    if (!file.is_open()) {
+        throw runtime_error("Failed to open file: " + filename);
+    }
+    
+    string content, line;
+    while (getline(file, line)) {
+        content += line + '\n';
+    }
+    return content;
+}
 
 #ifndef TYPES
 #define TYPES FLOAT,FIXED(31,17),FAST_FIXED(25, 11),FIXED(32, 16),DOUBLE,FAST_FIXED(32, 16)
@@ -67,6 +44,7 @@ constexpr char initial_field[DEFAULT_N][DEFAULT_M + 1] = {
 struct Size {
     size_t n, m;
     constexpr Size(size_t n_, size_t m_) : n(n_), m(m_) {}
+    constexpr Size() : n(0), m(0) {}
 };
 
 Size parse_size(const string& size_str) {
@@ -153,8 +131,19 @@ struct SimulationState {
     VectorField<VelocityType, N, M> velocity{};
     VectorField<VFlowType, N, M> velocity_flow{};
 
-    SimulationState() {
-        memcpy(field, initial_field, sizeof(field));
+    SimulationState(const string& field_content) {
+        stringstream ss(field_content);
+        string line;
+        size_t row = 0;
+        while (getline(ss, line) && row < N) {
+            size_t col = 0;
+            while (col < M && col < line.length()) {
+                field[row][col] = line[col];
+                col++;
+            }
+            field[row][col] = '\0';
+            row++;
+        }
     }
 };
 
@@ -496,12 +485,8 @@ public:
 };
 
 template<typename P, typename V, typename VF>
-void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M) {
-    static_assert(!std::is_same_v<P, void>, "PressureType cannot be void");
-    static_assert(!std::is_same_v<V, void>, "VelocityType cannot be void");
-    static_assert(!std::is_same_v<VF, void>, "VFlowType cannot be void");
-    
-    SimulationState<P, V, VF, DEFAULT_N, DEFAULT_M> state;
+void run_simulation(size_t n, size_t m, const string& field_content) {
+    SimulationState<P, V, VF, DEFAULT_N, DEFAULT_M> state(field_content);
     FluidSimulator<P, V, VF, DEFAULT_N, DEFAULT_M> simulator(state);
     simulator.run();
 }
@@ -560,64 +545,64 @@ template<typename AllowedTypes, typename SelectedTypes>
 struct TypeSelector {
     template<typename... Selected>
     static bool try_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
-                               const Size& size) {
-        return try_all_p_types<0>(p_type, v_type, v_flow_type, size);
+                               const Size& size, const string& field_content) {
+        return try_all_p_types<0>(p_type, v_type, v_flow_type, size, field_content);
     }
 
 private:
     template<size_t I>
     static bool try_all_p_types(const string& p_type, const string& v_type, const string& v_flow_type,
-                               const Size& size) {
+                               const Size& size, const string& field_content) {
         if constexpr (I >= AllowedTypes::size) {
             return false;
         } else {
             using P = typename AllowedTypes::template type_at<I>;
-            return try_with_p_type<P>(p_type, v_type, v_flow_type, size) ||
-                   try_all_p_types<I + 1>(p_type, v_type, v_flow_type, size);
+            return try_with_p_type<P>(p_type, v_type, v_flow_type, size, field_content) ||
+                   try_all_p_types<I + 1>(p_type, v_type, v_flow_type, size, field_content);
         }
     }
 
     template<typename P>
     static bool try_with_p_type(const string& p_type, const string& v_type, const string& v_flow_type,
-                               const Size& size) {
+                               const Size& size, const string& field_content) {
         if (!matches_type<P>(p_type)) return false;
-        return try_all_v_types<P, 0>(p_type, v_type, v_flow_type, size);
+        return try_all_v_types<P, 0>(p_type, v_type, v_flow_type, size, field_content);
     }
 
     template<typename P, size_t I>
     static bool try_all_v_types(const string& p_type, const string& v_type, const string& v_flow_type,
-                               const Size& size) {
+                               const Size& size, const string& field_content) {
         if constexpr (I >= AllowedTypes::size) {
             return false;
         } else {
             using V = typename AllowedTypes::template type_at<I>;
-            return try_with_v_type<P, V>(p_type, v_type, v_flow_type, size) ||
-                   try_all_v_types<P, I + 1>(p_type, v_type, v_flow_type, size);
+            return try_with_v_type<P, V>(p_type, v_type, v_flow_type, size, field_content) ||
+                   try_all_v_types<P, I + 1>(p_type, v_type, v_flow_type, size, field_content);
         }
     }
 
     template<typename P, typename V>
     static bool try_with_v_type(const string& p_type, const string& v_type, const string& v_flow_type,
-                               const Size& size) {
+                               const Size& size, const string& field_content) {
         if (!matches_type<V>(v_type)) return false;
-        return try_all_vf_types<P, V, 0>(p_type, v_type, v_flow_type, size);
+        return try_all_vf_types<P, V, 0>(p_type, v_type, v_flow_type, size, field_content);
     }
 
     template<typename P, typename V, size_t I>
     static bool try_all_vf_types(const string& p_type, const string& v_type, const string& v_flow_type,
-                                const Size& size) {
+                                const Size& size, const string& field_content) {
         if constexpr (I >= AllowedTypes::size) {
             return false;
         } else {
             using VF = typename AllowedTypes::template type_at<I>;
-            return try_with_vf_type<P, V, VF>(p_type, v_type, v_flow_type, size) ||
-                   try_all_vf_types<P, V, I + 1>(p_type, v_type, v_flow_type, size);
+            return try_with_vf_type<P, V, VF>(p_type, v_type, v_flow_type, size, field_content) ||
+                   try_all_vf_types<P, V, I + 1>(p_type, v_type, v_flow_type, size, field_content);
         }
     }
 
     template<typename P, typename V, typename VF>
     static bool try_with_vf_type(const string& p_type, const string& v_type, const string& v_flow_type,
-                                const Size& size) {
+                                const Size& size, const string& field_content) {
         if (!matches_type<VF>(v_flow_type)) return false;
 
         cerr << "Found matching types:\n"
@@ -625,19 +610,19 @@ private:
              << "V: " << get_pretty_type_name<V>() << "\n"
              << "VF: " << get_pretty_type_name<VF>() << "\n";
 
-        run_simulation<P, V, VF>(size.n, size.m);
+        run_simulation<P, V, VF>(size.n, size.m, field_content);
         return true;
     }
 };
 
 template<typename... Types>
 bool try_all_type_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
-                             const Size& size) {
-    return TypeSelector<TypesList<Types...>, TypesList<>>::try_combinations(p_type, v_type, v_flow_type, size);
+                             const Size& size, const string& field_content) {
+    return TypeSelector<TypesList<Types...>, TypesList<>>::try_combinations(p_type, v_type, v_flow_type, size, field_content);
 }
 
 bool create_and_run_simulation(const string& p_type, const string& v_type, const string& v_flow_type, 
-                             const Size& size) {
+                             const Size& size, const string& field_content) {
     try {
         cerr << "\nTrying to create simulation with:" << endl;
         cerr << "p_type: " << p_type << endl;
@@ -658,7 +643,7 @@ bool create_and_run_simulation(const string& p_type, const string& v_type, const
         #define DOUBLE double
         #define FIXED(N, K) Fixed<N, K>
         #define FAST_FIXED(N, K) FastFixed<N, K>
-        if (!try_all_type_combinations<TYPES>(p_type, v_type, v_flow_type, size)) {
+        if (!try_all_type_combinations<TYPES>(p_type, v_type, v_flow_type, size, field_content)) {
             cerr << "Error: No matching type combination found" << endl;
             return false;
         }
@@ -695,12 +680,55 @@ bool is_valid_type(const string& type) {
     return false;
 }
 
+Size get_field_size(const string& field_content) {
+    size_t n = 0, m = 0;
+    stringstream ss(field_content);
+    string line;
+    
+    while (getline(ss, line)) {
+        if (m == 0) m = line.length();
+        else if (line.length() != m) {
+            throw runtime_error("Invalid field format: lines have different lengths");
+        }
+        n++;
+    }
+    
+    if (n == 0 || m == 0) {
+        throw runtime_error("Empty field");
+    }
+    
+    if (n > DEFAULT_N || m > DEFAULT_M) {
+        throw runtime_error("Field size " + to_string(n) + "x" + to_string(m) + 
+                          " exceeds maximum allowed size " + to_string(DEFAULT_N) + 
+                          "x" + to_string(DEFAULT_M));
+    }
+    
+    return Size(n, m);
+}
+
 int main(int argc, char** argv) {
     string p_type = get_arg("--p-type", argc, argv, "FAST_FIXED(32, 16)");
     string v_type = get_arg("--v-type", argc, argv, "FIXED(32, 16)");
     string v_flow_type = get_arg("--v-flow-type", argc, argv, "FAST_FIXED(32, 16)");
-    string size_str = get_arg("--size", argc, argv, "S(36,84)");
+    string field_file = get_arg("--field", argc, argv, "field.txt");
     
+    string field_content;
+    try {
+        field_content = get_field_from_file(field_file);
+    } catch (const exception& e) {
+        cerr << "Error reading field file: " << e.what() << endl;
+        return 1;
+    }
+
+    Size size;
+    try {
+        size = get_field_size(field_content);
+        cerr << "Field size: " << size.n << "x" << size.m << endl;
+    } catch (const exception& e) {
+        cerr << "Error validating field: " << e.what() << endl;
+        return 1;
+    }
+
     if (!is_valid_type(p_type)) {
         cerr << "Invalid p_type: " << p_type << endl;
         return 1;
@@ -714,9 +742,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    auto size = parse_size(size_str);
-    
-    if (!create_and_run_simulation(p_type, v_type, v_flow_type, size)) {
+    if (!create_and_run_simulation(p_type, v_type, v_flow_type, size, field_content)) {
         cerr << "Failed to create simulation" << endl;
         return 1;
     }
