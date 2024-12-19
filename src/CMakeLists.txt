@@ -1,5 +1,7 @@
 set(HEADERS
     fixed.hpp
+    fast_fixed.hpp
+    fixed_operators.hpp
 )
 
 set(SOURCES

@@ -6,6 +6,9 @@
 #include <cmath>
 
 template<size_t N, size_t K>
+struct FastFixed;
+
+template<size_t N, size_t K>
 struct Fixed {
     static_assert(N > K, "N must be greater than K");
     static_assert(N <= 64, "N must be less than or equal to 64");
@@ -51,6 +54,14 @@ struct Fixed {
             return Fixed<N2,K2>::from_raw(static_cast<typename Fixed<N2,K2>::StorageType>(v) << (K2 - K));
         else
             return Fixed<N2,K2>::from_raw(static_cast<typename Fixed<N2,K2>::StorageType>(v) >> (K - K2));
+    }
+
+    template<size_t N2, size_t K2>
+    explicit operator FastFixed<N2,K2>() const {
+        if constexpr (K2 >= K)
+            return FastFixed<N2,K2>::from_raw(static_cast<typename FastFixed<N2,K2>::StorageType>(v) << (K2 - K));
+        else
+            return FastFixed<N2,K2>::from_raw(static_cast<typename FastFixed<N2,K2>::StorageType>(v) >> (K - K2));
     }
 };
 
