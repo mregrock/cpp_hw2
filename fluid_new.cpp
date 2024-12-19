@@ -11,6 +11,8 @@
 #include <optional>
 #include <variant>
 #include "src/fixed.hpp"
+#include "src/fast_fixed.hpp"
+#include "src/fixed_operators.hpp"
 
 using namespace std;
 
@@ -55,7 +57,7 @@ constexpr char initial_field[DEFAULT_N][DEFAULT_M + 1] = {
 };
 
 #ifndef TYPES
-#define TYPES FLOAT,FIXED(31,17),FIXED(25, 11),FIXED(32, 16),DOUBLE
+#define TYPES FLOAT,FIXED(31,17),FAST_FIXED(25, 11),FIXED(32, 16),DOUBLE,FAST_FIXED(32, 16)
 #endif
 
 #ifndef SIZES
@@ -145,6 +147,15 @@ struct is_fixed<Fixed<N,K>> : std::true_type {};
 
 template<typename T>
 inline constexpr bool is_fixed_v = is_fixed<T>::value;
+
+template<typename T>
+struct is_fast_fixed : std::false_type {};
+
+template<size_t N, size_t K>
+struct is_fast_fixed<FastFixed<N,K>> : std::true_type {};
+
+template<typename T>
+inline constexpr bool is_fast_fixed_v = is_fast_fixed<T>::value;
 
 template<typename PressureType, typename VelocityType, typename VFlowType, size_t N = DEFAULT_N, size_t M = DEFAULT_M>
 class FluidSimulator {
@@ -472,6 +483,8 @@ std::string get_pretty_type_name() {
         return "double";
     } else if constexpr (is_fixed_v<T>) {
         return "Fixed<" + std::to_string(T::bits) + "," + std::to_string(T::frac) + ">";
+    } else if constexpr (is_fast_fixed_v<T>) {
+        return "FastFixed<" + std::to_string(T::bits) + "," + std::to_string(T::frac) + ">";
     } else {
         return "unknown";
     }
@@ -495,6 +508,10 @@ static bool matches_type(const string& type) {
         return type == "DOUBLE";
     } else if constexpr (is_fixed_v<T>) {
         if (!type.starts_with("FIXED(")) return false;
+        auto [bits, frac] = parse_fixed_params(type);
+        return bits == T::bits && frac == T::frac;
+    } else if constexpr (is_fast_fixed_v<T>) {
+        if (!type.starts_with("FAST_FIXED(")) return false;
         auto [bits, frac] = parse_fixed_params(type);
         return bits == T::bits && frac == T::frac;
     }
@@ -598,6 +615,7 @@ bool create_and_run_simulation(const string& p_type, const string& v_type, const
         #define FLOAT float
         #define DOUBLE double
         #define FIXED(N, K) Fixed<N, K>
+        #define FAST_FIXED(N, K) FastFixed<N, K>
         if (!try_all_type_combinations<TYPES>(p_type, v_type, v_flow_type, n, m)) {
             cerr << "Error: No matching type combination found" << endl;
             return false;
@@ -636,9 +654,9 @@ bool is_valid_type(const string& type) {
 }
 
 int main(int argc, char** argv) {
-    string p_type = get_arg("--p-type", argc, argv, "FIXED(32,16)");
-    string v_type = get_arg("--v-type", argc, argv, "DOUBLE");
-    string v_flow_type = get_arg("--v-flow-type", argc, argv, "FLOAT");
+    string p_type = get_arg("--p-type", argc, argv, "FAST_FIXED(32,16)");
+    string v_type = get_arg("--v-type", argc, argv, "FIXED(31,17)");
+    string v_flow_type = get_arg("--v-flow-type", argc, argv, "DOUBLE");
     string size_str = get_arg("--size", argc, argv, "S(36,84)");
     
     if (!is_valid_type(p_type)) {
