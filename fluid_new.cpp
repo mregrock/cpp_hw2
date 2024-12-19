@@ -10,6 +10,9 @@
 #include <string_view>
 #include <optional>
 #include <variant>
+#include "src/fixed.hpp"
+#include "src/fast_fixed.hpp"
+#include "src/fixed_operators.hpp"
 
 using namespace std;
 
@@ -54,7 +57,7 @@ constexpr char initial_field[DEFAULT_N][DEFAULT_M + 1] = {
 };
 
 #ifndef TYPES
-#define TYPES FLOAT,FIXED(31,17),FIXED(25, 11),FIXED(32, 16),DOUBLE
+#define TYPES FLOAT,FIXED(31,17),FAST_FIXED(25, 11),FIXED(32, 16),DOUBLE,FAST_FIXED(32, 16)
 #endif
 
 #ifndef SIZES
@@ -80,114 +83,6 @@ constexpr Size parse_size(const char* s) {
         s++;
     }
     return Size(n, m);
-}
-
-template<size_t N, size_t K>
-struct Fixed {
-    static_assert(N > K, "N must be greater than K");
-    static_assert(N <= 64, "N must be less than or equal to 64");
-    
-    static constexpr size_t bits = N;
-    static constexpr size_t frac = K;
-    
-    using StorageType = typename std::conditional<N <= 32, int32_t, int64_t>::type;
-    
-    constexpr Fixed(int v = 0): v(static_cast<StorageType>(v) << K) {}
-    constexpr Fixed(float f): v(f * (StorageType(1) << K)) {}
-    constexpr Fixed(double f): v(f * (StorageType(1) << K)) {}
-
-    static constexpr Fixed from_raw(StorageType x) {
-        Fixed ret;
-        ret.v = x;
-        return ret;
-    }
-
-    StorageType v;
-
-    auto operator<=>(const Fixed&) const = default;
-    bool operator==(const Fixed&) const = default;
-
-    explicit operator float() const { return v / float(StorageType(1) << K); }
-    explicit operator double() const { return v / double(StorageType(1) << K); }
-
-    friend Fixed operator/(Fixed a, int b) {
-        return Fixed::from_raw(a.v / b);
-    }
-
-    friend Fixed operator*(Fixed a, int b) {
-        return Fixed::from_raw(a.v * b);
-    }
-
-    friend Fixed operator*(int a, Fixed b) {
-        return b * a;
-    }
-
-    template<size_t N2, size_t K2>
-    explicit operator Fixed<N2,K2>() const {
-        if constexpr (K2 >= K)
-            return Fixed<N2,K2>::from_raw(static_cast<typename Fixed<N2,K2>::StorageType>(v) << (K2 - K));
-        else
-            return Fixed<N2,K2>::from_raw(static_cast<typename Fixed<N2,K2>::StorageType>(v) >> (K - K2));
-    }
-};
-
-template<size_t N, size_t K>
-Fixed<N,K> operator+(Fixed<N,K> a, Fixed<N,K> b) {
-    return Fixed<N,K>::from_raw(a.v + b.v);
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator-(Fixed<N,K> a, Fixed<N,K> b) {
-    return Fixed<N,K>::from_raw(a.v - b.v);
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator*(Fixed<N,K> a, Fixed<N,K> b) {
-    using ST = typename Fixed<N,K>::StorageType;
-    if constexpr (N <= 32) {
-        return Fixed<N,K>::from_raw((static_cast<int64_t>(a.v) * b.v) >> K);
-    } else {
-        ST high = (a.v >> K) * b.v;
-        ST low = (a.v & ((ST(1) << K) - 1)) * b.v >> K;
-        return Fixed<N,K>::from_raw(high + low);
-    }
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator/(Fixed<N,K> a, Fixed<N,K> b) {
-    using ST = typename Fixed<N,K>::StorageType;
-    if constexpr (N <= 32) {
-        return Fixed<N,K>::from_raw((static_cast<int64_t>(a.v) << K) / b.v);
-    } else {
-        return Fixed<N,K>::from_raw((a.v << K) / b.v);
-    }
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> &operator+=(Fixed<N,K> &a, Fixed<N,K> b) { return a = a + b; }
-
-template<size_t N, size_t K>
-Fixed<N,K> &operator-=(Fixed<N,K> &a, Fixed<N,K> b) { return a = a - b; }
-
-template<size_t N, size_t K>
-Fixed<N,K> &operator*=(Fixed<N,K> &a, Fixed<N,K> b) { return a = a * b; }
-
-template<size_t N, size_t K>
-Fixed<N,K> &operator/=(Fixed<N,K> &a, Fixed<N,K> b) { return a = a / b; }
-
-template<size_t N, size_t K>
-Fixed<N,K> operator-(Fixed<N,K> x) { return Fixed<N,K>::from_raw(-x.v); }
-
-template<size_t N, size_t K>
-Fixed<N,K> abs(Fixed<N,K> x) {
-    Fixed<N,K> ret = x;
-    if (ret.v < 0) ret.v = -ret.v;
-    return ret;
-}
-
-template<size_t N, size_t K>
-ostream &operator<<(ostream &out, Fixed<N,K> x) {
-    return out << static_cast<double>(x);
 }
 
 template<typename NumericType, size_t N, size_t M>
@@ -252,6 +147,15 @@ struct is_fixed<Fixed<N,K>> : std::true_type {};
 
 template<typename T>
 inline constexpr bool is_fixed_v = is_fixed<T>::value;
+
+template<typename T>
+struct is_fast_fixed : std::false_type {};
+
+template<size_t N, size_t K>
+struct is_fast_fixed<FastFixed<N,K>> : std::true_type {};
+
+template<typename T>
+inline constexpr bool is_fast_fixed_v = is_fast_fixed<T>::value;
 
 template<typename PressureType, typename VelocityType, typename VFlowType, size_t N = DEFAULT_N, size_t M = DEFAULT_M>
 class FluidSimulator {
@@ -579,6 +483,8 @@ std::string get_pretty_type_name() {
         return "double";
     } else if constexpr (is_fixed_v<T>) {
         return "Fixed<" + std::to_string(T::bits) + "," + std::to_string(T::frac) + ">";
+    } else if constexpr (is_fast_fixed_v<T>) {
+        return "FastFixed<" + std::to_string(T::bits) + "," + std::to_string(T::frac) + ">";
     } else {
         return "unknown";
     }
@@ -594,29 +500,6 @@ pair<size_t, size_t> parse_fixed_params(const string& type) {
     return {N, K};
 }
 
-template<typename T>
-struct TypeHolder {
-    using type = T;
-    
-    TypeHolder() {
-        cerr << "Creating TypeHolder<" << get_pretty_type_name<T>() << ">" << endl;
-    }
-};
-
-template<std::size_t I, typename... Types>
-struct TypesPackGetAt;
-
-template<typename First, typename... Rest>
-struct TypesPackGetAt<0, First, Rest...> {
-    using type = First;
-};
-
-template<std::size_t I, typename First, typename... Rest>
-struct TypesPackGetAt<I, First, Rest...> {
-    using type = typename TypesPackGetAt<I-1, Rest...>::type;
-};
-
-template<typename T>
 static bool matches_type(const string& type) {
     if constexpr (std::is_same_v<T, float>) {
         return type == "FLOAT";
@@ -624,6 +507,10 @@ static bool matches_type(const string& type) {
         return type == "DOUBLE";
     } else if constexpr (is_fixed_v<T>) {
         if (!type.starts_with("FIXED(")) return false;
+        auto [bits, frac] = parse_fixed_params(type);
+        return bits == T::bits && frac == T::frac;
+    } else if constexpr (is_fast_fixed_v<T>) {
+        if (!type.starts_with("FAST_FIXED(")) return false;
         auto [bits, frac] = parse_fixed_params(type);
         return bits == T::bits && frac == T::frac;
     }
@@ -727,6 +614,7 @@ bool create_and_run_simulation(const string& p_type, const string& v_type, const
         #define FLOAT float
         #define DOUBLE double
         #define FIXED(N, K) Fixed<N, K>
+        #define FAST_FIXED(N, K) FastFixed<N, K>
         if (!try_all_type_combinations<TYPES>(p_type, v_type, v_flow_type, n, m)) {
             cerr << "Error: No matching type combination found" << endl;
             return false;
@@ -764,82 +652,10 @@ bool is_valid_type(const string& type) {
     return false;
 }
 
-template<size_t N, size_t K>
-Fixed<N,K> operator+(float a, Fixed<N,K> b) {
-    return Fixed<N,K>(a) + b;
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator+(Fixed<N,K> a, float b) {
-    return a + Fixed<N,K>(b);
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator-(float a, Fixed<N,K> b) {
-    return Fixed<N,K>(a) - b;
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator-(Fixed<N,K> a, float b) {
-    return a - Fixed<N,K>(b);
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator*(float a, Fixed<N,K> b) {
-    return Fixed<N,K>(a) * b;
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator*(Fixed<N,K> a, float b) {
-    return a * Fixed<N,K>(b);
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator/(float a, Fixed<N,K> b) {
-    return Fixed<N,K>(a) / b;
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator/(Fixed<N,K> a, float b) {
-    return a / Fixed<N,K>(b);
-}
-
-template<size_t N, size_t K>
-Fixed<N,K>& operator+=(float& a, Fixed<N,K> b) {
-    a = static_cast<float>(Fixed<N,K>(a) + b);
-    return a;
-}
-
-template<size_t N, size_t K>
-float& operator-=(float& a, Fixed<N,K> b) {
-    a = static_cast<float>(Fixed<N,K>(a) - b);
-    return a;
-}
-
-template<size_t N, size_t K>
-Fixed<N,K> operator+(double a, Fixed<N,K> b) {
-    return Fixed<N,K>(a) + b;
-}
-
-template<size_t N, size_t K>
-Fixed<N,K>& operator-=(Fixed<N,K>& a, float b) { 
-    return a = a - Fixed<N,K>(b); 
-}
-
-template<size_t N, size_t K>
-Fixed<N,K>& operator+=(Fixed<N,K>& a, float b) { 
-    return a = a + Fixed<N,K>(b); 
-}
-
-template<size_t N, size_t K>
-Fixed<N,K>& operator*=(Fixed<N,K>& a, float b) { 
-    return a = a * Fixed<N,K>(b); 
-}
-
 int main(int argc, char** argv) {
-    string p_type = get_arg("--p-type", argc, argv, "FIXED(32,16)");
-    string v_type = get_arg("--v-type", argc, argv, "DOUBLE");
-    string v_flow_type = get_arg("--v-flow-type", argc, argv, "FLOAT");
+    string p_type = get_arg("--p-type", argc, argv, "FAST_FIXED(32,16)");
+    string v_type = get_arg("--v-type", argc, argv, "FIXED(31,17)");
+    string v_flow_type = get_arg("--v-flow-type", argc, argv, "DOUBLE");
     string size_str = get_arg("--size", argc, argv, "S(36,84)");
     
     if (!is_valid_type(p_type)) {
