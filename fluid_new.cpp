@@ -61,15 +61,21 @@ constexpr char initial_field[DEFAULT_N][DEFAULT_M + 1] = {
 #endif
 
 #ifndef SIZES
-#define SIZES S(36,84)
+#define SIZES S(36,84), S(18,42)
 #endif
 
-struct Size {
+struct SizePair {
     size_t n, m;
-    constexpr Size(size_t n_, size_t m_) : n(n_), m(m_) {}
+    constexpr SizePair(size_t n_, size_t m_) : n(n_), m(m_) {}
 };
 
-constexpr Size parse_size(const char* s) {
+template<size_t N, size_t M>
+struct SizeType {
+    static constexpr size_t n = N;
+    static constexpr size_t m = M;
+};
+
+constexpr SizePair parse_size(const char* s) {
     s += 2;
     size_t n = 0;
     while (*s >= '0' && *s <= '9') {
@@ -82,7 +88,7 @@ constexpr Size parse_size(const char* s) {
         m = m * 10 + (*s - '0');
         s++;
     }
-    return Size(n, m);
+    return SizePair(n, m);
 }
 
 template<typename NumericType, size_t N, size_t M>
@@ -464,14 +470,14 @@ public:
     }
 };
 
-template<typename P, typename V, typename VF>
+template<typename P, typename V, typename VF, typename Size>
 void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M) {
     static_assert(!std::is_same_v<P, void>, "PressureType cannot be void");
     static_assert(!std::is_same_v<V, void>, "VelocityType cannot be void");
     static_assert(!std::is_same_v<VF, void>, "VFlowType cannot be void");
     
-    SimulationState<P, V, VF, DEFAULT_N, DEFAULT_M> state;
-    FluidSimulator<P, V, VF, DEFAULT_N, DEFAULT_M> simulator(state);
+    SimulationState<P, V, VF, Size::n, Size::m> state;
+    FluidSimulator<P, V, VF, Size::n, Size::m> simulator(state);
     simulator.run();
 }
 
@@ -525,7 +531,14 @@ struct TypesList {
     using type_at = typename std::tuple_element<I, std::tuple<Types...>>::type;
 };
 
-template<typename AllowedTypes, typename SelectedTypes>
+template<typename... Sizes>
+struct SizesList {
+    static constexpr size_t size = sizeof...(Sizes);
+    template<size_t I>
+    using size_at = typename std::tuple_element<I, std::tuple<Sizes...>>::type;
+};
+
+template<typename AllowedTypes, typename AllowedSizes, typename SelectedTypes>
 struct TypeSelector {
     template<typename... Selected>
     static bool try_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
@@ -594,7 +607,27 @@ private:
              << "V: " << get_pretty_type_name<V>() << "\n"
              << "VF: " << get_pretty_type_name<VF>() << "\n";
 
-        run_simulation<P, V, VF>(n, m);
+        return try_all_sizes<P, V, VF, 0>(p_type, v_type, v_flow_type, n, m);
+    }
+    template<typename P, typename V, typename VF, size_t I>
+    static bool try_all_sizes(const string& p_type, const string& v_type, const string& v_flow_type,
+                             size_t n, size_t m) {
+        if constexpr (I >= AllowedSizes::size) {
+            return false;
+        } else {
+            using CurrentSize = typename AllowedSizes::template size_at<I>;
+            return try_with_size<P, V, VF, CurrentSize>(p_type, v_type, v_flow_type, n, m) ||
+                   try_all_sizes<P, V, VF, I + 1>(p_type, v_type, v_flow_type, n, m);
+        }
+    }
+
+    template<typename P, typename V, typename VF, typename CurrentSize>
+    static bool try_with_size(const string& p_type, const string& v_type, const string& v_flow_type,
+                             size_t n, size_t m) {
+        if (CurrentSize::n != n || CurrentSize::m != m) return false;
+        
+        cerr << "Found matching size: " << CurrentSize::n << "x" << CurrentSize::m << "\n";
+        run_simulation<P, V, VF, CurrentSize>(n, m);
         return true;
     }
 };
@@ -602,7 +635,8 @@ private:
 template<typename... Types>
 bool try_all_type_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
                              size_t n, size_t m) {
-    return TypeSelector<TypesList<Types...>, TypesList<>>::try_combinations(p_type, v_type, v_flow_type, n, m);
+    #define S(N, M) SizeType<N, M>
+    return TypeSelector<TypesList<Types...>, SizesList<SIZES>, TypesList<>>::try_combinations(p_type, v_type, v_flow_type, n, m);
 }
 
 bool create_and_run_simulation(const string& p_type, const string& v_type, const string& v_flow_type, 
