@@ -17,7 +17,15 @@
 using namespace std;
 
 constexpr size_t DEFAULT_N = 36, DEFAULT_M = 84;
-constexpr char initial_field[DEFAULT_N][DEFAULT_M + 1] = {
+constexpr size_t dynamic_size = std::numeric_limits<size_t>::max();
+
+template<typename T, size_t N = dynamic_size, size_t M = dynamic_size>
+using SimulationMatrix = std::conditional_t<N == dynamic_size || M == dynamic_size,
+    std::vector<std::vector<T>>,
+    std::array<std::array<T, M + (std::is_same_v<T, char> ? 1 : 0)>, N>
+>;
+
+std::vector<std::string> initial_field = {
     "####################################################################################",
     "#                                                                                  #",
     "#                                                                                  #",
@@ -61,7 +69,7 @@ constexpr char initial_field[DEFAULT_N][DEFAULT_M + 1] = {
 #endif
 
 #ifndef SIZES
-#define SIZES S(36,84), S(18,42)
+#define SIZES /*S(36,84), S(18,42)*/
 #endif
 
 struct SizePair {
@@ -94,7 +102,7 @@ constexpr SizePair parse_size(const char* s) {
 template<typename NumericType, size_t N, size_t M>
 struct VectorField {
     static constexpr std::array<pair<int, int>, 4> deltas{{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
-    array<NumericType, 4> v[N][M];
+    SimulationMatrix<std::array<NumericType, 4>, N, M> v{};
 
     NumericType &add(int x, int y, int dx, int dy, NumericType dv) {
         return get(x, y, dx, dy) += dv;
@@ -111,25 +119,75 @@ template<
     typename PressureType,
     typename VelocityType,
     typename VFlowType,
-    size_t N = DEFAULT_N,
-    size_t M = DEFAULT_M
+    size_t N = dynamic_size,
+    size_t M = dynamic_size
 >
 struct SimulationState {
     PressureType rho[256];
-    PressureType p[N][M]{};
-    PressureType old_p[N][M]{};
+    SimulationMatrix<PressureType, N, M> p{};
+    SimulationMatrix<PressureType, N, M> old_p{};
 
-    char field[N][M + 1];
-    int last_use[N][M]{};
+    SimulationMatrix<char, N, M> field{};
+    SimulationMatrix<int, N, M> last_use{};
     int UT{0};
     mt19937 rnd{1337};
-    int dirs[N][M]{};
+    SimulationMatrix<int, N, M> dirs{};
 
     VectorField<VelocityType, N, M> velocity{};
     VectorField<VFlowType, N, M> velocity_flow{};
 
-    SimulationState() {
-        memcpy(field, initial_field, sizeof(field));
+    SimulationState(const std::vector<std::string>& initial_field = {}) {
+        std::cerr << "Creating SimulationState with N=" << N << ", M=" << M << std::endl;
+        std::cerr << "Initial field empty: " << initial_field.empty() << std::endl;
+        
+        if constexpr (N == dynamic_size || M == dynamic_size) {
+            std::cerr << "Dynamic size branch" << std::endl;
+            if (!initial_field.empty()) {
+                size_t n = initial_field.size();
+                size_t m = initial_field[0].size();
+                std::cerr << "Resizing to " << n << "x" << m << std::endl;
+                
+                field.resize(n);
+                for (auto& row : field) {
+                    row.resize(m + 1);
+                }
+                p.resize(n);
+                for (auto& row : p) {
+                    row.resize(m);
+                }
+                old_p.resize(n);
+                for (auto& row : old_p) {
+                    row.resize(m);
+                }
+                last_use.resize(n);
+                for (auto& row : last_use) {
+                    row.resize(m);
+                }
+                dirs.resize(n);
+                for (auto& row : dirs) {
+                    row.resize(m);
+                }
+                for (size_t i = 0; i < n; ++i) {
+                    for (size_t j = 0; j < m; ++j) {
+                        field[i][j] = initial_field[i][j];
+                    }
+                }
+            }
+        } else {
+            std::cerr << "Static size branch" << std::endl;
+            if (!initial_field.empty()) {
+                if (initial_field.size() != N || initial_field[0].size() != M) {
+                    std::cerr << "Size mismatch: got " << initial_field.size() << "x" 
+                                << initial_field[0].size() << " instead of " << N << "x" << M << std::endl;
+                    throw std::runtime_error("Field size mismatch");
+                }
+                for (size_t i = 0; i < N; ++i) {
+                    for (size_t j = 0; j < M; ++j) {
+                        field[i][j] = initial_field[i][j];
+                    }
+                }
+            }
+        }
     }
 };
 
@@ -166,18 +224,20 @@ inline constexpr bool is_fast_fixed_v = is_fast_fixed<T>::value;
 template<typename PressureType, typename VelocityType, typename VFlowType, size_t N = DEFAULT_N, size_t M = DEFAULT_M>
 class FluidSimulator {
 private:
+    size_t runtime_n, runtime_m;
+
     static constexpr size_t T = 1'000'000;
     static constexpr std::array<pair<int, int>, 4> deltas{{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
     
-    char field[N][M + 1];
-    PressureType p[N][M]{}, old_p[N][M];
-    int last_use[N][M]{};
+    SimulationMatrix<char, N, M> field{};
+    SimulationMatrix<PressureType, N, M> p{}, old_p{};
+    SimulationMatrix<int, N, M> last_use{};
     int UT = 0;
     mt19937 rnd{1337};
     PressureType rho[256];
 
     struct VectorField {
-        array<VelocityType, 4> v[N][M]{};
+        SimulationMatrix<array<VelocityType, 4>, N, M> v{};
         
         VelocityType& get(int x, int y, int dx, int dy) {
             size_t i = ranges::find(deltas, pair(dx, dy)) - deltas.begin();
@@ -188,10 +248,17 @@ private:
         VelocityType& add(int x, int y, int dx, int dy, VelocityType dv) {
             return get(x, y, dx, dy) += dv;
         }
+
+        void resize(size_t n, size_t m) {
+            v.resize(n);
+            for (auto& row : v) {
+                row.assign(m, std::array<VelocityType, 4>{});
+            }
+        }
     };
 
     VectorField velocity{}, velocity_flow{};
-    int dirs[N][M]{};
+    SimulationMatrix<int, N, M> dirs{};
 
     struct ParticleParams {
         char type;
@@ -230,6 +297,33 @@ private:
         } else {
             return VFlowType(value);
         }
+    }
+
+    size_t get_n() const {
+        if constexpr (N == dynamic_size) {
+            return runtime_n;
+        } else {
+            return N;
+        }
+    }
+
+    size_t get_m() const {
+        if constexpr (M == dynamic_size) {
+            return runtime_m;
+        } else {
+            return M;
+        }
+    }
+
+    void init_state(const SimulationState<PressureType, VelocityType, VFlowType, N, M>& state) {
+        field = state.field;
+        p = state.p;
+        old_p = state.old_p;
+        last_use = state.last_use;
+        UT = state.UT;
+        dirs = state.dirs;
+        velocity.resize(runtime_n, runtime_m);
+        velocity_flow.resize(runtime_n, runtime_m);
     }
 
     tuple<VelocityType, bool, pair<int, int>> propagate_flow(int x, int y, VelocityType lim) {
@@ -351,12 +445,20 @@ private:
 
 public:
     FluidSimulator(const SimulationState<PressureType, VelocityType, VFlowType, N, M>& state) {
-        memcpy(field, state.field, sizeof(field));
+        field = state.field;
         rho[' '] = PressureType(0.01);
         rho['.'] = PressureType(1000);
-        
-        for (size_t x = 0; x < N; ++x) {
-            for (size_t y = 0; y < M; ++y) {
+        if constexpr (N == dynamic_size || M == dynamic_size) {
+            runtime_n = field.size();
+            runtime_m = field[0].size() - 1;
+            init_state(state);
+        }
+        else {
+            runtime_n = N;
+            runtime_m = M;
+        }
+        for (size_t x = 0; x < get_n(); ++x) {
+            for (size_t y = 0; y < get_m(); ++y) {
                 if (field[x][y] == '#') continue;
                 for (auto [dx, dy] : deltas) {
                     dirs[x][y] += (field[x + dx][y + dy] != '#');
@@ -367,13 +469,15 @@ public:
 
     void run() {
         PressureType g = PressureType(0.1);
-        
+        for (size_t x = 0; x < get_n(); ++x) {
+            field[x][get_m()] = '\0';
+            cout << field[x].data() << "\n";
+        }
         for (size_t i = 0; i < T; ++i) {
             PressureType total_delta_p = 0;
-            
             // Apply external forces
-            for (size_t x = 0; x < N; ++x) {
-                for (size_t y = 0; y < M; ++y) {
+            for (size_t x = 0; x < get_n(); ++x) {
+                for (size_t y = 0; y < get_m(); ++y) {
                     if (field[x][y] == '#') continue;
                     if (field[x + 1][y] != '#')
                         velocity.add(x, y, 1, 0, VelocityType(g));
@@ -381,9 +485,9 @@ public:
             }
 
             // Apply forces from p
-            memcpy(old_p, p, sizeof(p));
-            for (size_t x = 0; x < N; ++x) {
-                for (size_t y = 0; y < M; ++y) {
+            old_p = p;
+            for (size_t x = 0; x < get_n(); ++x) {
+                for (size_t y = 0; y < get_m(); ++y) {
                     if (field[x][y] == '#') continue;
                     for (auto [dx, dy] : deltas) {
                         int nx = x + dx, ny = y + dy;
@@ -404,15 +508,19 @@ public:
                     }
                 }
             }
-
             // Make flow from velocities
-            velocity_flow = {};
+            if constexpr (N == dynamic_size || M == dynamic_size) {
+                velocity_flow.resize(runtime_n, runtime_m);
+            }
+            else {
+                velocity_flow = {};
+            }
             bool prop = false;
             do {
                 UT += 2;
                 prop = false;
-                for (size_t x = 0; x < N; ++x) {
-                    for (size_t y = 0; y < M; ++y) {
+                for (size_t x = 0; x < get_n(); ++x) {
+                    for (size_t y = 0; y < get_m(); ++y) {
                         if (field[x][y] != '#' && last_use[x][y] != UT) {
                             auto [t, local_prop, _] = propagate_flow(x, y, VelocityType(1));
                             if (t > VelocityType(0)) prop = true;
@@ -422,8 +530,8 @@ public:
             } while (prop);
 
             // Recalculate p with kinetic energy
-            for (size_t x = 0; x < N; ++x) {
-                for (size_t y = 0; y < M; ++y) {
+            for (size_t x = 0; x < get_n(); ++x) {
+                for (size_t y = 0; y < get_m(); ++y) {
                     if (field[x][y] == '#') continue;
                     for (auto [dx, dy] : deltas) {
                         auto old_v = velocity.get(x, y, dx, dy);
@@ -447,8 +555,8 @@ public:
 
             UT += 2;
             prop = false;
-            for (size_t x = 0; x < N; ++x) {
-                for (size_t y = 0; y < M; ++y) {
+            for (size_t x = 0; x < get_n(); ++x) {
+                for (size_t y = 0; y < get_m(); ++y) {
                     if (field[x][y] != '#' && last_use[x][y] != UT) {
                         if (random01() < move_prob(x, y)) {
                             prop = true;
@@ -462,23 +570,27 @@ public:
 
             if (prop) {
                 cout << "Tick " << i << ":\n";
-                for (size_t x = 0; x < N; ++x) {
-                    cout << field[x] << "\n";
+                for (size_t x = 0; x < get_n(); ++x) {
+                    field[x][get_m()] = '\0';
+                    cout << field[x].data() << "\n";
                 }
             }
         }
     }
 };
 
-template<typename P, typename V, typename VF, typename Size>
-void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M) {
-    static_assert(!std::is_same_v<P, void>, "PressureType cannot be void");
-    static_assert(!std::is_same_v<V, void>, "VelocityType cannot be void");
-    static_assert(!std::is_same_v<VF, void>, "VFlowType cannot be void");
-    
-    SimulationState<P, V, VF, Size::n, Size::m> state;
-    FluidSimulator<P, V, VF, Size::n, Size::m> simulator(state);
-    simulator.run();
+template<typename P, typename V, typename VF, typename Size=SizeType<dynamic_size, dynamic_size>>
+void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M) {    
+    try {
+        SimulationState<P, V, VF, Size::n, Size::m> state(initial_field);
+        FluidSimulator<P, V, VF, Size::n, Size::m> simulator(state);
+        
+        simulator.run();
+        std::cerr << "Simulation completed" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "Exception in run_simulation: " << e.what() << std::endl;
+        throw;
+    }
 }
 
 template<typename T>
@@ -543,6 +655,7 @@ struct TypeSelector {
     template<typename... Selected>
     static bool try_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
                                size_t n, size_t m) {
+        std::cerr << "Entering try_combinations with sizes n=" << n << ", m=" << m << std::endl;
         return try_all_p_types<0>(p_type, v_type, v_flow_type, n, m);
     }
 
@@ -602,12 +715,14 @@ private:
                                 size_t n, size_t m) {
         if (!matches_type<VF>(v_flow_type)) return false;
 
-        cerr << "Found matching types:\n"
-             << "P: " << get_pretty_type_name<P>() << "\n"
-             << "V: " << get_pretty_type_name<V>() << "\n"
-             << "VF: " << get_pretty_type_name<VF>() << "\n";
-
-        return try_all_sizes<P, V, VF, 0>(p_type, v_type, v_flow_type, n, m);
+        std::cerr << "Found matching types and about to create simulation" << std::endl;
+        
+        if constexpr (AllowedSizes::size == 0) {
+            run_simulation<P, V, VF>(n, m);
+            return true;
+        } else {
+            return try_all_sizes<P, V, VF, 0>(p_type, v_type, v_flow_type, n, m);
+        }
     }
     template<typename P, typename V, typename VF, size_t I>
     static bool try_all_sizes(const string& p_type, const string& v_type, const string& v_flow_type,
@@ -626,8 +741,8 @@ private:
                              size_t n, size_t m) {
         if (CurrentSize::n != n || CurrentSize::m != m) return false;
         
-        cerr << "Found matching size: " << CurrentSize::n << "x" << CurrentSize::m << "\n";
-        run_simulation<P, V, VF, CurrentSize>(n, m);
+        std::cerr << "Found matching size: " << CurrentSize::n << "x" << CurrentSize::m << std::endl;
+        run_simulation<P, V, VF, CurrentSize>(CurrentSize::n, CurrentSize::m);
         return true;
     }
 };
