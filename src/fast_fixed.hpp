@@ -74,7 +74,7 @@ FastFixed<N,K> operator+(FastFixed<N,K> a, FastFixed<N,K> b) {
 }
 
 template<size_t N, size_t K>
-FastFixed<N,K> operator-(FastFixed<N,K> a, FastFixed<N,K> b) {
+FastFixed<N,K> operator-(const FastFixed<N,K>& a, const FastFixed<N,K>& b) {
     return FastFixed<N,K>::from_raw(a.v - b.v);
 }
 
@@ -114,6 +114,16 @@ FastFixed<N,K> &operator/=(FastFixed<N,K> &a, FastFixed<N,K> b) { return a = a /
 
 template<size_t N, size_t K>
 FastFixed<N,K> operator-(FastFixed<N,K> x) { return FastFixed<N,K>::from_raw(-x.v); }
+
+template<size_t N, size_t K>
+FastFixed<N,K> operator-(FastFixed<N,K>& a, double b) {
+    return a - FastFixed<N,K>(b);
+}
+
+template<size_t N, size_t K>
+FastFixed<N,K> operator-(double a, FastFixed<N,K> b) {
+    return FastFixed<N,K>(a) - b;
+}
 
 template<size_t N, size_t K>
 FastFixed<N,K> abs(FastFixed<N,K> x) {

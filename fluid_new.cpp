@@ -113,6 +113,13 @@ struct VectorField {
         assert(i < deltas.size());
         return v[x][y][i];
     }
+
+    void resize(size_t n, size_t m) {
+        v.resize(n);
+        for (auto& row : v) {
+            row.assign(m, std::array<NumericType, 4>{});
+        }
+    }
 };
 
 template<
@@ -236,28 +243,29 @@ private:
     mt19937 rnd{1337};
     PressureType rho[256];
 
-    struct VectorField {
-        SimulationMatrix<array<VelocityType, 4>, N, M> v{};
+    // struct VectorField {
+    //     SimulationMatrix<array<VelocityType, 4>, N, M> v{};
         
-        VelocityType& get(int x, int y, int dx, int dy) {
-            size_t i = ranges::find(deltas, pair(dx, dy)) - deltas.begin();
-            assert(i < deltas.size());
-            return v[x][y][i];
-        }
+    //     VelocityType& get(int x, int y, int dx, int dy) {
+    //         size_t i = ranges::find(deltas, pair(dx, dy)) - deltas.begin();
+    //         assert(i < deltas.size());
+    //         return v[x][y][i];
+    //     }
 
-        VelocityType& add(int x, int y, int dx, int dy, VelocityType dv) {
-            return get(x, y, dx, dy) += dv;
-        }
+    //     VelocityType& add(int x, int y, int dx, int dy, VelocityType dv) {
+    //         return get(x, y, dx, dy) += dv;
+    //     }
 
-        void resize(size_t n, size_t m) {
-            v.resize(n);
-            for (auto& row : v) {
-                row.assign(m, std::array<VelocityType, 4>{});
-            }
-        }
-    };
+    //     void resize(size_t n, size_t m) {
+    //         v.resize(n);
+    //         for (auto& row : v) {
+    //             row.assign(m, std::array<VelocityType, 4>{});
+    //         }
+    //     }
+    // };
 
-    VectorField velocity{}, velocity_flow{};
+    VectorField<VelocityType, N, M> velocity{};
+    VectorField<VFlowType, N, M> velocity_flow{};
     SimulationMatrix<int, N, M> dirs{};
 
     struct ParticleParams {
@@ -336,16 +344,16 @@ private:
                 auto flow = velocity_flow.get(x, y, dx, dy);
                 if (flow == cap) continue;
                 
-                auto vp = min(lim, cap - flow);
+                auto vp = min(lim, to_velocity(cap - flow));
                 if (last_use[nx][ny] == UT - 1) {
-                    velocity_flow.add(x, y, dx, dy, vp);
+                    velocity_flow.add(x, y, dx, dy, to_flow(vp));
                     last_use[x][y] = UT;
                     return {vp, true, {nx, ny}};
                 }
                 auto [t, prop, end] = propagate_flow(nx, ny, vp);
                 ret += t;
                 if (prop) {
-                    velocity_flow.add(x, y, dx, dy, t);
+                    velocity_flow.add(x, y, dx, dy, to_flow(t));
                     last_use[x][y] = UT;
                     return {t, prop && end != pair(x, y), end};
                 }
@@ -538,7 +546,7 @@ public:
                         auto new_v = velocity_flow.get(x, y, dx, dy);
                         if (old_v > VelocityType(0)) {
                             assert(new_v <= old_v);
-                            velocity.get(x, y, dx, dy) = new_v;
+                            velocity.get(x, y, dx, dy) = to_velocity(new_v);
                             auto force = to_pressure(old_v - new_v) * rho[(int)field[x][y]];
                             if (field[x][y] == '.') force *= PressureType(0.8);
                             if (field[x + dx][y + dy] == '#') {
