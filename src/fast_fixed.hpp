@@ -53,18 +53,32 @@ struct FastFixed {
 
     template<size_t N2, size_t K2>
     explicit operator FastFixed<N2,K2>() const {
-        if constexpr (K2 >= K)
+        if constexpr (K2 >= K) {
             return FastFixed<N2,K2>::from_raw(static_cast<typename FastFixed<N2,K2>::StorageType>(v) << (K2 - K));
-        else
-            return FastFixed<N2,K2>::from_raw(static_cast<typename FastFixed<N2,K2>::StorageType>(v) >> (K - K2));
+        } else {
+            constexpr size_t shift = K - K2;
+            if constexpr (shift >= N2) {
+                auto temp = v >> (shift - N2 + 1);
+                return FastFixed<N2,K2>::from_raw(static_cast<typename FastFixed<N2,K2>::StorageType>(temp) >> 1);
+            } else {
+                return FastFixed<N2,K2>::from_raw(static_cast<typename FastFixed<N2,K2>::StorageType>(v) >> shift);
+            }
+        }
     }
 
     template<size_t N2, size_t K2>
     explicit operator Fixed<N2,K2>() const {
-        if constexpr (K2 >= K)
+        if constexpr (K2 >= K) {
             return Fixed<N2,K2>::from_raw(static_cast<typename Fixed<N2,K2>::StorageType>(v) << (K2 - K));
-        else
-            return Fixed<N2,K2>::from_raw(static_cast<typename Fixed<N2,K2>::StorageType>(v) >> (K - K2));
+        } else {
+            constexpr size_t shift = K - K2;
+            if constexpr (shift >= N2) {
+                auto temp = v >> (shift - N2 + 1);
+                return Fixed<N2,K2>::from_raw(static_cast<typename Fixed<N2,K2>::StorageType>(temp) >> 1);
+            } else {
+                return Fixed<N2,K2>::from_raw(static_cast<typename Fixed<N2,K2>::StorageType>(v) >> shift);
+            }
+        }
     }
 };
 
