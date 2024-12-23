@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <array>
 #include <vector>
 #include <random>
@@ -174,6 +175,8 @@ struct SimulationState {
                 for (auto& row : dirs) {
                     row.resize(m);
                 }
+                velocity.resize(n, m);
+                velocity_flow.resize(n, m);
                 for (size_t i = 0; i < n; ++i) {
                     for (size_t j = 0; j < m; ++j) {
                         field[i][j] = initial_field[i][j];
@@ -195,6 +198,87 @@ struct SimulationState {
                 }
             }
         }
+    }
+
+    void save(const std::string& filename) {
+        std::ofstream out(filename, std::ios::binary);
+        if (!out) {
+            throw std::runtime_error("Failed to open file for writing");
+        }
+        size_t n = field.size();
+        size_t m = field[0].size() - 1;
+        out.write(reinterpret_cast<const char*>(&n), sizeof(n));
+        out.write(reinterpret_cast<const char*>(&m), sizeof(m));
+        
+        for (size_t i = 0; i < n; ++i) {
+            out.write(reinterpret_cast<const char*>(field[i].data()), m);
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            out.write(reinterpret_cast<const char*>(p[i].data()), m);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            out.write(reinterpret_cast<const char*>(old_p[i].data()), m);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            out.write(reinterpret_cast<const char*>(last_use[i].data()), m);
+        }
+        out.write(reinterpret_cast<const char*>(&UT), sizeof(UT));
+        out.write(reinterpret_cast<const char*>(rho), sizeof(rho));
+        for (size_t i = 0; i < n; ++i) {
+            out.write(reinterpret_cast<const char*>(dirs[i].data()), m);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < m; ++j) {
+                out.write(reinterpret_cast<const char*>(velocity.v[i][j].data()), 4 * sizeof(VelocityType));
+            }
+        }
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < m; ++j) {
+                out.write(reinterpret_cast<const char*>(velocity_flow.v[i][j].data()), 4 * sizeof(VFlowType));
+            }
+        }
+        out.close();
+    }
+     static SimulationState load(const std::string& filename) {
+        std::ifstream in(filename, std::ios::binary);
+        if (!in) {
+            throw std::runtime_error("Cannot open file for reading: " + filename);
+        }
+
+        size_t n, m;
+        in.read(reinterpret_cast<char*>(&n), sizeof(n));
+        in.read(reinterpret_cast<char*>(&m), sizeof(m));
+
+        SimulationState state(n, m);
+
+        for (size_t i = 0; i < n; ++i) {
+            in.read(reinterpret_cast<char*>(state.field[i].data()), m);
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            in.read(reinterpret_cast<char*>(state.pressure[i].data()), 
+                   m * sizeof(PressureType));
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < m; ++j) {
+                in.read(reinterpret_cast<char*>(state.velocity.v[i][j].data()), 
+                       4 * sizeof(VelocityType));
+            }
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < m; ++j) {
+                in.read(reinterpret_cast<char*>(state.velocity_flow.v[i][j].data()), 
+                       4 * sizeof(VFlowType));
+            }
+        }
+
+        if (!in) {
+            throw std::runtime_error("Error reading from file: " + filename);
+        }
+        return state;
     }
 };
 
@@ -233,6 +317,8 @@ class FluidSimulator {
 private:
     size_t runtime_n, runtime_m;
 
+    static constexpr int autosave_interval = 10;
+
     static constexpr size_t T = 1'000'000;
     static constexpr std::array<pair<int, int>, 4> deltas{{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}};
     
@@ -242,27 +328,6 @@ private:
     int UT = 0;
     mt19937 rnd{1337};
     PressureType rho[256];
-
-    // struct VectorField {
-    //     SimulationMatrix<array<VelocityType, 4>, N, M> v{};
-        
-    //     VelocityType& get(int x, int y, int dx, int dy) {
-    //         size_t i = ranges::find(deltas, pair(dx, dy)) - deltas.begin();
-    //         assert(i < deltas.size());
-    //         return v[x][y][i];
-    //     }
-
-    //     VelocityType& add(int x, int y, int dx, int dy, VelocityType dv) {
-    //         return get(x, y, dx, dy) += dv;
-    //     }
-
-    //     void resize(size_t n, size_t m) {
-    //         v.resize(n);
-    //         for (auto& row : v) {
-    //             row.assign(m, std::array<VelocityType, 4>{});
-    //         }
-    //     }
-    // };
 
     VectorField<VelocityType, N, M> velocity{};
     VectorField<VFlowType, N, M> velocity_flow{};
@@ -330,8 +395,8 @@ private:
         last_use = state.last_use;
         UT = state.UT;
         dirs = state.dirs;
-        velocity.resize(runtime_n, runtime_m);
-        velocity_flow.resize(runtime_n, runtime_m);
+        velocity = state.velocity;
+        velocity_flow = state.velocity_flow;
     }
 
     tuple<VelocityType, bool, pair<int, int>> propagate_flow(int x, int y, VelocityType lim) {
@@ -451,6 +516,19 @@ private:
         return ret;
     }
 
+    SimulationState<PressureType, VelocityType, VFlowType, N, M> create_state() const {
+        SimulationState<PressureType, VelocityType, VFlowType, N, M> state;
+        state.field = field;
+        state.p = p;
+        state.old_p = old_p;
+        state.last_use = last_use;
+        state.UT = UT;
+        state.dirs = dirs;
+        state.velocity = velocity;
+        state.velocity_flow = velocity_flow;
+        return state;
+    }
+
 public:
     FluidSimulator(const SimulationState<PressureType, VelocityType, VFlowType, N, M>& state) {
         field = state.field;
@@ -482,6 +560,10 @@ public:
             cout << field[x].data() << "\n";
         }
         for (size_t i = 0; i < T; ++i) {
+            if (i % autosave_interval == 0) {
+                auto state = create_state();
+                state.save("autosave.bin");
+            }
             PressureType total_delta_p = 0;
             // Apply external forces
             for (size_t x = 0; x < get_n(); ++x) {
