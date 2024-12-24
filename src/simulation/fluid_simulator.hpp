@@ -259,17 +259,20 @@ public:
         }
     }
 
-    void run() {
+    void run(bool benchmark = false, size_t ticks = 1000) {
         PressureType g = PressureType(0.1);
         for (size_t x = 0; x < get_n(); ++x) {
             field[x][get_m()] = '\0';
-            std::cout << field[x].data() << "\n";
+            if (!benchmark) {
+                std::cout << field[x].data() << "\n";
+            }
         }
         for (size_t i = 0; i < T; ++i) {
-            if (i % autosave_interval == 0) {
+            if (!benchmark && i % autosave_interval == 0) {
                 auto state = create_state();
                 state.save("autosave.bin");
             }
+            if (i == ticks) break;
             PressureType total_delta_p = 0;
             // Apply external forces
             for (size_t x = 0; x < get_n(); ++x) {
@@ -364,7 +367,7 @@ public:
                 }
             }
 
-            if (prop) {
+            if (prop && !benchmark) {
                 std::cout << "Tick " << i << ":\n";
                 for (size_t x = 0; x < get_n(); ++x) {
                     field[x][get_m()] = '\0';

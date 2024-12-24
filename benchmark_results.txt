@@ -1,0 +1,29 @@
+Run 1:
+  Total time: 9707.000 ms
+  Average time per tick: 97.070 ms
+  Ticks per second: 10.302
+
+Run 2:
+  Total time: 9547.000 ms
+  Average time per tick: 95.470 ms
+  Ticks per second: 10.474
+
+Run 3:
+  Total time: 9537.000 ms
+  Average time per tick: 95.370 ms
+  Ticks per second: 10.485
+
+Run 4:
+  Total time: 9546.000 ms
+  Average time per tick: 95.460 ms
+  Ticks per second: 10.476
+
+Run 5:
+  Total time: 9751.000 ms
+  Average time per tick: 97.510 ms
+  Ticks per second: 10.255
+
+Average across 5 runs:
+  Total time: 9617.600 ms
+  Average time per tick: 96.176 ms
+  Ticks per second: 10.399

@@ -8,6 +8,7 @@
 #include <random>
 #include <vector>
 #include "../types/types.h"
+#include "vector_field.hpp"
 
 template<
     typename PressureType,
@@ -56,15 +57,10 @@ struct SimulationState {
     }
 
     SimulationState(const std::vector<std::string>& initial_field = {}) {
-        std::cerr << "Creating SimulationState with N=" << N << ", M=" << M << std::endl;
-        std::cerr << "Initial field empty: " << initial_field.empty() << std::endl;
-        
         if constexpr (N == dynamic_size || M == dynamic_size) {
-            std::cerr << "Dynamic size branch" << std::endl;
             if (!initial_field.empty()) {
                 size_t n = initial_field.size();
                 size_t m = initial_field[0].size();
-                std::cerr << "Resizing to " << n << "x" << m << std::endl;
                 resize_all(n, m);
                 for (size_t i = 0; i < n; ++i) {
                     for (size_t j = 0; j < m; ++j) {
@@ -73,11 +69,8 @@ struct SimulationState {
                 }
             }
         } else {
-            std::cerr << "Static size branch" << std::endl;
             if (!initial_field.empty()) {
                 if (initial_field.size() != N || initial_field[0].size() != M) {
-                    std::cerr << "Size mismatch: got " << initial_field.size() << "x" 
-                                << initial_field[0].size() << " instead of " << N << "x" << M << std::endl;
                     throw std::runtime_error("Field size mismatch");
                 }
                 for (size_t i = 0; i < N; ++i) {
