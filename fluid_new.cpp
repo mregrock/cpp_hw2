@@ -200,13 +200,35 @@ struct SimulationState {
         }
     }
 
+    size_t get_n() const {
+        if constexpr (N == dynamic_size) {
+            return field.size();
+        } else {
+            return N;
+        }
+    }
+
+    size_t get_m() const {
+        if constexpr (M == dynamic_size) {
+            return field[0].size() - 1;
+        } else {
+            return M;
+        }
+    }
+
     void save(const std::string& filename) {
         std::ofstream out(filename, std::ios::binary);
         if (!out) {
             throw std::runtime_error("Failed to open file for writing");
         }
-        size_t n = field.size();
-        size_t m = field[0].size() - 1;
+        size_t n, m;
+        if constexpr (N == dynamic_size || M == dynamic_size) {
+            n = field.size();
+            m = field[0].size() - 1;
+        } else {
+            n = N;
+            m = M;
+        }
         out.write(reinterpret_cast<const char*>(&n), sizeof(n));
         out.write(reinterpret_cast<const char*>(&m), sizeof(m));
         
@@ -240,38 +262,37 @@ struct SimulationState {
         }
         out.close();
     }
-     static SimulationState load(const std::string& filename) {
+
+    static SimulationState load(const std::string& filename) {
         std::ifstream in(filename, std::ios::binary);
         if (!in) {
             throw std::runtime_error("Cannot open file for reading: " + filename);
         }
-
         size_t n, m;
         in.read(reinterpret_cast<char*>(&n), sizeof(n));
         in.read(reinterpret_cast<char*>(&m), sizeof(m));
 
-        SimulationState state(n, m);
+        SimulationState<PressureType, VelocityType, VFlowType, N, M> state;
 
         for (size_t i = 0; i < n; ++i) {
             in.read(reinterpret_cast<char*>(state.field[i].data()), m);
         }
 
         for (size_t i = 0; i < n; ++i) {
-            in.read(reinterpret_cast<char*>(state.pressure[i].data()), 
-                   m * sizeof(PressureType));
+            in.read(reinterpret_cast<char*>(state.p[i].data()), m * sizeof(PressureType));
         }
 
         for (size_t i = 0; i < n; ++i) {
             for (size_t j = 0; j < m; ++j) {
                 in.read(reinterpret_cast<char*>(state.velocity.v[i][j].data()), 
-                       4 * sizeof(VelocityType));
+                        4 * sizeof(VelocityType));
             }
         }
 
         for (size_t i = 0; i < n; ++i) {
             for (size_t j = 0; j < m; ++j) {
                 in.read(reinterpret_cast<char*>(state.velocity_flow.v[i][j].data()), 
-                       4 * sizeof(VFlowType));
+                        4 * sizeof(VFlowType));
             }
         }
 
@@ -669,13 +690,57 @@ public:
     }
 };
 
+vector<string> read_field(const string& filename) {
+    std::ifstream in(filename);
+    if (!in) {
+        throw std::runtime_error("Can't open file: " + filename);
+    }
+    vector<string> field;
+    string line;
+    while (getline(in, line)) {
+        if (line.empty()) continue;
+        if (!field.empty() && line.length() != field[0].length()) {
+            throw std::runtime_error("Inconsistent line length in field");
+        }
+        field.push_back(line);
+    }
+    return field;
+}
+
+template<typename PressureType, typename VelocityType, typename VFlowType>
+bool is_state_file(const string& filename, size_t n, size_t m) {
+    std::ifstream in(filename, std::ios::binary);
+    if (!in) return false;
+
+    in.read(reinterpret_cast<char*>(&n), sizeof(n));
+    in.read(reinterpret_cast<char*>(&m), sizeof(m));
+    
+    size_t min_state_size = sizeof(size_t) * 2 +
+                           n * m + 
+                           n * m * (sizeof(PressureType) +
+                                  4 * sizeof(VelocityType) +
+                                  4 * sizeof(VFlowType));
+    
+    in.seekg(0, std::ios::end);
+    return in.tellg() >= min_state_size;
+}
+
 template<typename P, typename V, typename VF, typename Size=SizeType<dynamic_size, dynamic_size>>
-void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M) {    
+void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M, const string& filename="field.txt") {    
     try {
-        SimulationState<P, V, VF, Size::n, Size::m> state(initial_field);
-        FluidSimulator<P, V, VF, Size::n, Size::m> simulator(state);
-        
-        simulator.run();
+        if (is_state_file<P, V, VF>(filename, n, m)) {
+            std::cerr << "Loading full state " << filename << std::endl;
+            auto state = SimulationState<P, V, VF, Size::n, Size::m>::load(filename);
+            FluidSimulator<P, V, VF, Size::n, Size::m> simulator(state);
+            simulator.run();
+        }
+        else {
+            std::cerr << "Loading initial field " << filename << std::endl;
+            auto initial_field = read_field(filename);
+            SimulationState<P, V, VF, Size::n, Size::m> state(initial_field);
+            FluidSimulator<P, V, VF, Size::n, Size::m> simulator(state);
+            simulator.run();
+        }
         std::cerr << "Simulation completed" << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "Exception in run_simulation: " << e.what() << std::endl;
@@ -744,79 +809,79 @@ template<typename AllowedTypes, typename AllowedSizes, typename SelectedTypes>
 struct TypeSelector {
     template<typename... Selected>
     static bool try_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
+                               size_t n, size_t m, const string& filename) {
         std::cerr << "Entering try_combinations with sizes n=" << n << ", m=" << m << std::endl;
-        return try_all_p_types<0>(p_type, v_type, v_flow_type, n, m);
+        return try_all_p_types<0>(p_type, v_type, v_flow_type, n, m, filename);
     }
 
 private:
     template<size_t I>
     static bool try_all_p_types(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
+                               size_t n, size_t m, const string& filename) {
         if constexpr (I >= AllowedTypes::size) {
             return false;
         } else {
             using P = typename AllowedTypes::template type_at<I>;
-            return try_with_p_type<P>(p_type, v_type, v_flow_type, n, m) ||
-                   try_all_p_types<I + 1>(p_type, v_type, v_flow_type, n, m);
+            return try_with_p_type<P>(p_type, v_type, v_flow_type, n, m, filename) ||
+                   try_all_p_types<I + 1>(p_type, v_type, v_flow_type, n, m, filename);
         }
     }
 
     template<typename P>
     static bool try_with_p_type(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
+                               size_t n, size_t m, const string& filename) {
         if (!matches_type<P>(p_type)) return false;
-        return try_all_v_types<P, 0>(p_type, v_type, v_flow_type, n, m);
+        return try_all_v_types<P, 0>(p_type, v_type, v_flow_type, n, m, filename);
     }
 
     template<typename P, size_t I>
     static bool try_all_v_types(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
+                               size_t n, size_t m, const string& filename) {
         if constexpr (I >= AllowedTypes::size) {
             return false;
         } else {
             using V = typename AllowedTypes::template type_at<I>;
-            return try_with_v_type<P, V>(p_type, v_type, v_flow_type, n, m) ||
-                   try_all_v_types<P, I + 1>(p_type, v_type, v_flow_type, n, m);
+            return try_with_v_type<P, V>(p_type, v_type, v_flow_type, n, m, filename) ||
+                   try_all_v_types<P, I + 1>(p_type, v_type, v_flow_type, n, m, filename);
         }
     }
 
     template<typename P, typename V>
     static bool try_with_v_type(const string& p_type, const string& v_type, const string& v_flow_type,
-                               size_t n, size_t m) {
+                               size_t n, size_t m, const string& filename) {
         if (!matches_type<V>(v_type)) return false;
-        return try_all_vf_types<P, V, 0>(p_type, v_type, v_flow_type, n, m);
+        return try_all_vf_types<P, V, 0>(p_type, v_type, v_flow_type, n, m, filename);
     }
 
     template<typename P, typename V, size_t I>
     static bool try_all_vf_types(const string& p_type, const string& v_type, const string& v_flow_type,
-                                size_t n, size_t m) {
+                                size_t n, size_t m, const string& filename) {
         if constexpr (I >= AllowedTypes::size) {
             return false;
         } else {
             using VF = typename AllowedTypes::template type_at<I>;
-            return try_with_vf_type<P, V, VF>(p_type, v_type, v_flow_type, n, m) ||
-                   try_all_vf_types<P, V, I + 1>(p_type, v_type, v_flow_type, n, m);
+            return try_with_vf_type<P, V, VF>(p_type, v_type, v_flow_type, n, m, filename) ||
+                   try_all_vf_types<P, V, I + 1>(p_type, v_type, v_flow_type, n, m, filename);
         }
     }
 
     template<typename P, typename V, typename VF>
     static bool try_with_vf_type(const string& p_type, const string& v_type, const string& v_flow_type,
-                                size_t n, size_t m) {
+                                size_t n, size_t m, const string& filename) {
         if (!matches_type<VF>(v_flow_type)) return false;
 
         std::cerr << "Found matching types and about to create simulation" << std::endl;
         
         if constexpr (AllowedSizes::size == 0) {
-            run_simulation<P, V, VF>(n, m);
+            run_simulation<P, V, VF>(n, m, filename);
             return true;
         } else {
-            return try_all_sizes<P, V, VF, 0>(p_type, v_type, v_flow_type, n, m);
+            return try_all_sizes<P, V, VF, 0>(p_type, v_type, v_flow_type, n, m, filename);
         }
     }
     template<typename P, typename V, typename VF, size_t I>
     static bool try_all_sizes(const string& p_type, const string& v_type, const string& v_flow_type,
-                             size_t n, size_t m) {
+                             size_t n, size_t m, const string& filename) {
         if constexpr (I >= AllowedSizes::size) {
             return false;
         } else {
@@ -828,7 +893,7 @@ private:
 
     template<typename P, typename V, typename VF, typename CurrentSize>
     static bool try_with_size(const string& p_type, const string& v_type, const string& v_flow_type,
-                             size_t n, size_t m) {
+                             size_t n, size_t m, const string& filename) {
         if (CurrentSize::n != n || CurrentSize::m != m) return false;
         
         std::cerr << "Found matching size: " << CurrentSize::n << "x" << CurrentSize::m << std::endl;
@@ -839,13 +904,13 @@ private:
 
 template<typename... Types>
 bool try_all_type_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
-                             size_t n, size_t m) {
+                             size_t n, size_t m, const string& filename) {
     #define S(N, M) SizeType<N, M>
-    return TypeSelector<TypesList<Types...>, SizesList<SIZES>, TypesList<>>::try_combinations(p_type, v_type, v_flow_type, n, m);
+    return TypeSelector<TypesList<Types...>, SizesList<SIZES>, TypesList<>>::try_combinations(p_type, v_type, v_flow_type, n, m, filename);
 }
 
 bool create_and_run_simulation(const string& p_type, const string& v_type, const string& v_flow_type, 
-                             size_t n, size_t m) {
+                             size_t n, size_t m, const string& filename) {
     try {
         cerr << "\nTrying to create simulation with types:" << endl;
         cerr << "p_type: " << p_type << endl;
@@ -855,7 +920,7 @@ bool create_and_run_simulation(const string& p_type, const string& v_type, const
         #define DOUBLE double
         #define FIXED(N, K) Fixed<N, K>
         #define FAST_FIXED(N, K) FastFixed<N, K>
-        if (!try_all_type_combinations<TYPES>(p_type, v_type, v_flow_type, n, m)) {
+        if (!try_all_type_combinations<TYPES>(p_type, v_type, v_flow_type, n, m, filename)) {
             cerr << "Error: No matching type combination found" << endl;
             return false;
         }
@@ -897,6 +962,7 @@ int main(int argc, char** argv) {
     string v_type = get_arg("--v-type", argc, argv, "FIXED(31,17)");
     string v_flow_type = get_arg("--v-flow-type", argc, argv, "DOUBLE");
     string size_str = get_arg("--size", argc, argv, "S(36,84)");
+    string filename = get_arg("--file", argc, argv, "field.txt");
     
     if (!is_valid_type(p_type)) {
         cerr << "Invalid p_type: " << p_type << endl;
@@ -913,7 +979,7 @@ int main(int argc, char** argv) {
 
     auto size = parse_size(size_str.c_str());
     
-    if (!create_and_run_simulation(p_type, v_type, v_flow_type, size.n, size.m)) {
+    if (!create_and_run_simulation(p_type, v_type, v_flow_type, size.n, size.m, filename)) {
         cerr << "Failed to create simulation with types: " << p_type << ", " << v_type << ", " << v_flow_type << endl;
         return 1;
     }
