@@ -144,6 +144,31 @@ struct SimulationState {
     VectorField<VelocityType, N, M> velocity{};
     VectorField<VFlowType, N, M> velocity_flow{};
 
+    void resize_all(size_t n, size_t m) {
+        field.resize(n);
+        for (auto& row : field) {
+            row.resize(m + 1);
+        }
+        p.resize(n);
+        for (auto& row : p) {
+            row.resize(m);
+        }
+        old_p.resize(n);
+        for (auto& row : old_p) {
+            row.resize(m);
+        }
+        last_use.resize(n);
+        for (auto& row : last_use) {
+            row.resize(m);
+        }
+        dirs.resize(n);
+        for (auto& row : dirs) {
+            row.resize(m);
+        }
+        velocity.resize(n, m);
+        velocity_flow.resize(n, m);
+    }
+
     SimulationState(const std::vector<std::string>& initial_field = {}) {
         std::cerr << "Creating SimulationState with N=" << N << ", M=" << M << std::endl;
         std::cerr << "Initial field empty: " << initial_field.empty() << std::endl;
@@ -154,29 +179,7 @@ struct SimulationState {
                 size_t n = initial_field.size();
                 size_t m = initial_field[0].size();
                 std::cerr << "Resizing to " << n << "x" << m << std::endl;
-                
-                field.resize(n);
-                for (auto& row : field) {
-                    row.resize(m + 1);
-                }
-                p.resize(n);
-                for (auto& row : p) {
-                    row.resize(m);
-                }
-                old_p.resize(n);
-                for (auto& row : old_p) {
-                    row.resize(m);
-                }
-                last_use.resize(n);
-                for (auto& row : last_use) {
-                    row.resize(m);
-                }
-                dirs.resize(n);
-                for (auto& row : dirs) {
-                    row.resize(m);
-                }
-                velocity.resize(n, m);
-                velocity_flow.resize(n, m);
+                resize_all(n, m);
                 for (size_t i = 0; i < n; ++i) {
                     for (size_t j = 0; j < m; ++j) {
                         field[i][j] = initial_field[i][j];
@@ -273,6 +276,7 @@ struct SimulationState {
         in.read(reinterpret_cast<char*>(&m), sizeof(m));
 
         SimulationState<PressureType, VelocityType, VFlowType, N, M> state;
+        state.resize_all(n, m);
 
         for (size_t i = 0; i < n; ++i) {
             in.read(reinterpret_cast<char*>(state.field[i].data()), m);
@@ -707,28 +711,15 @@ vector<string> read_field(const string& filename) {
     return field;
 }
 
-template<typename PressureType, typename VelocityType, typename VFlowType>
-bool is_state_file(const string& filename, size_t n, size_t m) {
-    std::ifstream in(filename, std::ios::binary);
-    if (!in) return false;
-
-    in.read(reinterpret_cast<char*>(&n), sizeof(n));
-    in.read(reinterpret_cast<char*>(&m), sizeof(m));
-    
-    size_t min_state_size = sizeof(size_t) * 2 +
-                           n * m + 
-                           n * m * (sizeof(PressureType) +
-                                  4 * sizeof(VelocityType) +
-                                  4 * sizeof(VFlowType));
-    
-    in.seekg(0, std::ios::end);
-    return in.tellg() >= min_state_size;
+bool is_state_file(const string& filename) {
+    return filename.ends_with(".bin");
 }
 
 template<typename P, typename V, typename VF, typename Size=SizeType<dynamic_size, dynamic_size>>
-void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M, const string& filename="field.txt") {    
+void run_simulation(size_t n = DEFAULT_N, size_t m = DEFAULT_M, const string& filename="field.txt") {  
+    cerr << "Running simulation with n=" << n << ", m=" << m << ", filename=" << filename << endl;
     try {
-        if (is_state_file<P, V, VF>(filename, n, m)) {
+        if (is_state_file(filename)) {
             std::cerr << "Loading full state " << filename << std::endl;
             auto state = SimulationState<P, V, VF, Size::n, Size::m>::load(filename);
             FluidSimulator<P, V, VF, Size::n, Size::m> simulator(state);
@@ -810,7 +801,7 @@ struct TypeSelector {
     template<typename... Selected>
     static bool try_combinations(const string& p_type, const string& v_type, const string& v_flow_type,
                                size_t n, size_t m, const string& filename) {
-        std::cerr << "Entering try_combinations with sizes n=" << n << ", m=" << m << std::endl;
+        std::cerr << "Entering try_combinations with sizes n=" << n << ", m=" << m << ", filename=" << filename << std::endl;
         return try_all_p_types<0>(p_type, v_type, v_flow_type, n, m, filename);
     }
 
@@ -886,8 +877,8 @@ private:
             return false;
         } else {
             using CurrentSize = typename AllowedSizes::template size_at<I>;
-            return try_with_size<P, V, VF, CurrentSize>(p_type, v_type, v_flow_type, n, m) ||
-                   try_all_sizes<P, V, VF, I + 1>(p_type, v_type, v_flow_type, n, m);
+            return try_with_size<P, V, VF, CurrentSize>(p_type, v_type, v_flow_type, n, m, filename) ||
+                   try_all_sizes<P, V, VF, I + 1>(p_type, v_type, v_flow_type, n, m, filename);
         }
     }
 
@@ -897,7 +888,7 @@ private:
         if (CurrentSize::n != n || CurrentSize::m != m) return false;
         
         std::cerr << "Found matching size: " << CurrentSize::n << "x" << CurrentSize::m << std::endl;
-        run_simulation<P, V, VF, CurrentSize>(CurrentSize::n, CurrentSize::m);
+        run_simulation<P, V, VF, CurrentSize>(CurrentSize::n, CurrentSize::m, filename);
         return true;
     }
 };
@@ -976,7 +967,6 @@ int main(int argc, char** argv) {
         cerr << "Invalid v_flow_type: " << v_flow_type << endl;
         return 1;
     }
-
     auto size = parse_size(size_str.c_str());
     
     if (!create_and_run_simulation(p_type, v_type, v_flow_type, size.n, size.m, filename)) {
