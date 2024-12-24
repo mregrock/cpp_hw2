@@ -16,7 +16,12 @@ struct VectorField {
     }
 
     NumericType &get(int x, int y, int dx, int dy) {
-        size_t i = std::ranges::find(deltas, std::pair(dx, dy)) - deltas.begin();
+        //size_t i = std::ranges::find(deltas, std::pair(dx, dy)) - deltas.begin();
+        size_t i = 0;
+        if (dx == -1) i = 0;
+        else if (dx == 1) i = 1;
+        else if (dy == -1) i = 2;
+        else if (dy == 1) i = 3;
         assert(i < deltas.size());
         return v[x][y][i];
     }
