@@ -10,7 +10,7 @@
 class Benchmark {
 public:
     static constexpr size_t NUM_RUNS = 5;
-    static constexpr size_t TICKS_PER_RUN = 100;
+    static constexpr size_t TICKS_PER_RUN = 200;
 
     struct Result {
         double total_time_ms;
