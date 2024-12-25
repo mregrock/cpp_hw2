@@ -17,6 +17,7 @@
 #include <optional>
 #include <variant>
 #include <iostream>
+#include "../thread_pool/thread_pool.hpp"
 
 template<typename PressureType, typename VelocityType, typename VFlowType, size_t N = DEFAULT_N, size_t M = DEFAULT_M>
 class FluidSimulator {
@@ -38,6 +39,8 @@ private:
     VectorField<VelocityType, N, M> velocity{};
     VectorField<VFlowType, N, M> velocity_flow{};
     SimulationMatrix<int, N, M> dirs{};
+
+    ThreadPool thread_pool;
 
     struct ParticleParams {
         char type;
@@ -91,6 +94,24 @@ private:
             return runtime_m;
         } else {
             return M;
+        }
+    }
+
+    template<typename Func>
+    void parallel_for(size_t start, size_t end, size_t chunk_size, Func f) {
+        std::vector<std::future<void>> futures;
+        for (size_t i = start; i < end; i += chunk_size) {
+            size_t local_end = std::min(i + chunk_size, end);
+            futures.push_back(
+                thread_pool.enqueue([=]() {
+                    for (size_t j = i; j < local_end; ++j) {
+                        f(j);
+                    }
+                })
+            );
+        }
+        for (auto& future : futures) {
+            future.get();
         }
     }
 
@@ -275,17 +296,18 @@ public:
             if (i == ticks) break;
             PressureType total_delta_p = 0;
             // Apply external forces
-            for (size_t x = 0; x < get_n(); ++x) {
+            size_t chunk_size = get_n() / thread_pool.get_thread_count();
+            parallel_for(0, get_n(), chunk_size, [&](size_t x) {
                 for (size_t y = 0; y < get_m(); ++y) {
                     if (field[x][y] == '#') continue;
                     if (field[x + 1][y] != '#')
                         velocity.add(x, y, 1, 0, VelocityType(g));
                 }
-            }
+            });
 
             // Apply forces from p
             old_p = p;
-            for (size_t x = 0; x < get_n(); ++x) {
+            parallel_for(0, get_n(), chunk_size, [&](size_t x) {
                 for (size_t y = 0; y < get_m(); ++y) {
                     if (field[x][y] == '#') continue;
                     for (auto [dx, dy] : deltas) {
@@ -301,12 +323,15 @@ public:
                             force -= to_pressure(contr) * rho[(int)field[nx][ny]];
                             contr = 0;
                             velocity.add(x, y, dx, dy, to_velocity(force / rho[(int)field[x][y]]));
-                            p[x][y] -= force / dirs[x][y];
-                            total_delta_p -= force / dirs[x][y];
+                            std::atomic<PressureType>& atomic_p = reinterpret_cast<std::atomic<PressureType>&>(p[x][y]);
+                            atomic_p.store(atomic_p.load() - force / dirs[x][y]);
+                            
+                            std::atomic<PressureType>& atomic_total = reinterpret_cast<std::atomic<PressureType>&>(total_delta_p);
+                            atomic_total.store(atomic_total.load() - force / dirs[x][y]);
                         }
                     }
                 }
-            }
+            });
             // Make flow from velocities
             if constexpr (N == dynamic_size || M == dynamic_size) {
                 velocity_flow.resize(runtime_n, runtime_m);
@@ -329,7 +354,7 @@ public:
             } while (prop);
 
             // Recalculate p with kinetic energy
-            for (size_t x = 0; x < get_n(); ++x) {
+            parallel_for(0, get_n(), chunk_size, [&](size_t x) {
                 for (size_t y = 0; y < get_m(); ++y) {
                     if (field[x][y] == '#') continue;
                     for (auto [dx, dy] : deltas) {
@@ -341,16 +366,20 @@ public:
                             auto force = to_pressure(old_v - new_v) * rho[(int)field[x][y]];
                             if (field[x][y] == '.') force *= PressureType(0.8);
                             if (field[x + dx][y + dy] == '#') {
-                                p[x][y] += force / dirs[x][y];
-                                total_delta_p += force / dirs[x][y];
+                                std::atomic<PressureType>& atomic_p = reinterpret_cast<std::atomic<PressureType>&>(p[x][y]);
+                                atomic_p.store(atomic_p.load() + force / dirs[x][y]);
+                                std::atomic<PressureType>& atomic_total = reinterpret_cast<std::atomic<PressureType>&>(total_delta_p);
+                                atomic_total.store(atomic_total.load() + force / dirs[x][y]);
                             } else {
-                                p[x + dx][y + dy] += force / dirs[x + dx][y + dy];
-                                total_delta_p += force / dirs[x + dx][y + dy];
+                                std::atomic<PressureType>& atomic_p = reinterpret_cast<std::atomic<PressureType>&>(p[x + dx][y + dy]);
+                                atomic_p.store(atomic_p.load() + force / dirs[x + dx][y + dy]);
+                                std::atomic<PressureType>& atomic_total = reinterpret_cast<std::atomic<PressureType>&>(total_delta_p);
+                                atomic_total.store(atomic_total.load() + force / dirs[x + dx][y + dy]);
                             }
                         }
                     }
                 }
-            }
+            });
 
             UT += 2;
             prop = false;
