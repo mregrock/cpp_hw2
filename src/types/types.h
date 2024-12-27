@@ -7,6 +7,7 @@
 #include <optional>
 #include <variant>
 #include <type_traits>
+#include <limits>
 
 constexpr size_t DEFAULT_N = 36, DEFAULT_M = 84;
 constexpr size_t dynamic_size = std::numeric_limits<size_t>::max();
